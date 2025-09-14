@@ -941,11 +941,38 @@ async def autosave_loop():
         save_json("menu.json", menu_data)
         await asyncio.sleep(15)
 
+
+
+from aiohttp import web
+
+async def handle(request):
+    return web.Response(text="✅ Bot is alive!")
+
+async def start_web_server():
+    app = web.Application()
+    app.router.add_get("/", handle)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", 10000)  # Render зазвичай дає порт через $PORT, але 10000 підійде
+    await site.start()
+
+
+
+
 # ========== Запуск ==========
+# async def main():
+#     print("Бот запускається...")
+#     asyncio.create_task(autosave_loop())
+#     await dp.start_polling(bot)
+
 async def main():
     print("Бот запускається...")
     asyncio.create_task(autosave_loop())
+    asyncio.create_task(start_web_server())  # 👈 додали
     await dp.start_polling(bot)
+
+
+
 
 if __name__ == "__main__":
     asyncio.run(main())
