@@ -6,6 +6,7 @@ import datetime
 import random
 import time
 from typing import Dict, Any
+from aiohttp import web
 
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
@@ -57,6 +58,7 @@ menu_data = load_json("menu.json", {})
 waiting_for: Dict[str, Any] = {}
 user_class: Dict[str, str] = {}
 last_click: Dict[str, float] = {}
+menu_stack: Dict[str, list] = {}
 
 # ========== Клавіатури ==========
 def main_menu(is_admin: bool = False) -> ReplyKeyboardMarkup:
@@ -64,9 +66,8 @@ def main_menu(is_admin: bool = False) -> ReplyKeyboardMarkup:
         [KeyboardButton(text="📅 Розклад"), KeyboardButton(text="🔔 Розклад дзвінків")],
         [KeyboardButton(text="📰 Новини"), KeyboardButton(text="😂 Меми")],
         [KeyboardButton(text="🌐 Соцмережі школи"), KeyboardButton(text="🍽️ Меню їдальні")],
-        [KeyboardButton(text="⭐ Заробити бали"), KeyboardButton(text="✏️ Змінити клас")],
-        [KeyboardButton(text="🛍️ Магазин")],
-        [KeyboardButton(text="✉️ Зв’язатись з автором")]
+        [KeyboardButton(text="⭐ Заробити бали"), KeyboardButton(text="🛍️ Магазин")],
+        [KeyboardButton(text="✏️ Змінити клас"), KeyboardButton(text="✉️ Зв’язатись з автором")]
     ]
     if is_admin:
         buttons.append([KeyboardButton(text="⚙️ Адмін-меню")])
@@ -76,8 +77,7 @@ def class_selection_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(keyboard=[
         [KeyboardButton(text="1"), KeyboardButton(text="2"), KeyboardButton(text="3"), KeyboardButton(text="4")],
         [KeyboardButton(text="5-А"), KeyboardButton(text="5-Б"), KeyboardButton(text="6"), KeyboardButton(text="7")],
-        [KeyboardButton(text="8"), KeyboardButton(text="9"), KeyboardButton(text="10"), KeyboardButton(text="11")],
-        [KeyboardButton(text="Я вчитель")]
+        [KeyboardButton(text="8"), KeyboardButton(text="9"), KeyboardButton(text="10"), KeyboardButton(text="11")]
     ], resize_keyboard=True)
 
 def day_selection_keyboard() -> ReplyKeyboardMarkup:
@@ -90,10 +90,11 @@ def day_selection_keyboard() -> ReplyKeyboardMarkup:
 def admin_menu_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(keyboard=[
         [KeyboardButton(text="👀 Перевірити пропозиції")],
-        [KeyboardButton(text="➕ Додати новину"), KeyboardButton(text="➕ Додати мем")],
-        [KeyboardButton(text="➕ Додати меню"), KeyboardButton(text="➕ Додати соцмережу")],
-        [KeyboardButton(text="📅 Змінити розклад"), KeyboardButton(text="🛍️ Змінити магазин"), KeyboardButton(text="➖ Видалити меню")],
-        [KeyboardButton(text="➖ Видалити новину"), KeyboardButton(text="➖ Видалити мем")],
+        [KeyboardButton(text="📅 Змінити розклад"), KeyboardButton(text="🛍️ Змінити магазин")],
+        [KeyboardButton(text="➕ Додати новину"), KeyboardButton(text="➖ Видалити новину")],
+        [KeyboardButton(text="➕ Додати соцмережу"), KeyboardButton(text="➖ Видалити соцмережу")],
+        [KeyboardButton(text="➕ Додати меню"), KeyboardButton(text="➖ Видалити меню")],
+        [KeyboardButton(text="➕ Додати мем"), KeyboardButton(text="➖ Видалити мем")],
         [KeyboardButton(text="⬅️ Назад")]
     ], resize_keyboard=True)
 
@@ -122,7 +123,7 @@ async def cmd_start(message: types.Message):
     uid = uid_str_from_message(message)
     if uid not in user_class:
         waiting_for[uid] = "choose_class"
-        await message.answer("Привіт! Оберіть свій клас:", reply_markup=class_selection_keyboard())
+        await message.answer("Привіт! Обери свій клас:", reply_markup=class_selection_keyboard())
     else:
         await message.answer("Вітаю знову!", reply_markup=main_menu(message.from_user.id == AUTHOR_ID))
 
@@ -171,8 +172,18 @@ async def view_memes(message: types.Message):
             await message.answer_photo(item["file_id"], caption=item.get("text",""))
         elif isinstance(item, dict) and item.get("type") == "video":
             await message.answer_video(item["file_id"], caption=item.get("text",""))
+        elif isinstance(item, dict) and item.get("type") == "voice":
+            # якщо хочеш підпис до голосу — зберігай text і відправляй його окремим повідомленням
+            if item.get("text"):
+                await message.answer(item.get("text"))
+            await message.answer_voice(item["file_id"])
+        elif isinstance(item, dict) and item.get("type") == "video_note":
+            if item.get("text"):
+                await message.answer(item.get("text"))
+            await message.answer_video_note(item["file_id"])
         else:
             await message.answer(str(item))
+
     await message.answer("Готово.", reply_markup=main_menu(message.from_user.id == AUTHOR_ID))
 
 # ========== Розклад ==========
@@ -258,7 +269,7 @@ async def open_shop(message: types.Message):
 @dp.message(lambda m: m.text == "🛍️ Змінити магазин" and m.from_user.id == AUTHOR_ID)
 async def admin_change_shop(message: types.Message):
     waiting_for[str(message.from_user.id)] = "set_shop_photo"
-    await message.answer("Надішліть нове фото магазину з підписом (опціонально).")
+    await message.answer("Надішліть нове фото магазину з підписом.")
 
 @dp.message(lambda m: waiting_for.get(str(m.from_user.id)) == "set_shop_photo" and (m.photo or m.document))
 async def save_shop_photo(message: types.Message):
@@ -293,7 +304,7 @@ async def view_memes(message: types.Message):
             await message.answer_video(item["file_id"], caption=item.get("text",""))
         else:
             await message.answer(str(item))
-    await message.answer("Готово.", reply_markup=main_menu(message.from_user.id == AUTHOR_ID))
+    await message.answer('Це всі меми, якщо маєш якийсь, надсилай в "📤 Додати мем"\nВсі видалені меми зберігаються тут: https://t.me/arhive_mems', reply_markup=main_menu(message.from_user.id == AUTHOR_ID))
 
 @dp.message(lambda m: m.text == "📤 Додати мем")
 async def user_add_meme_prompt(message: types.Message):
@@ -338,6 +349,17 @@ async def show_socials(message: types.Message):
 async def admin_add_social_prompt(message: types.Message):
     waiting_for[str(message.from_user.id)] = "admin_add_social"
     await message.answer("Введи у форматі: Назва | Посилання", reply_markup=ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="⬅️ Назад")]], resize_keyboard=True))
+
+@dp.message(lambda m: m.text == "➖ Видалити соцмережу" and m.from_user.id == AUTHOR_ID)
+async def admin_delete_social_prompt(message: types.Message):
+    if not socials_data:
+        await message.answer("Соцмереж поки немає.", reply_markup=admin_menu_keyboard())
+        return
+    text = "Список соцмереж:\n" + "\n".join(f"{i+1}. {name}: {link}" for i, (name, link) in enumerate(socials_data.items()))
+    waiting_for[str(message.from_user.id)] = "admin_delete_social"
+    await message.answer(text + "\n\nВведи назву або номер соцмережі для видалення:", reply_markup=ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="⬅️ Назад")]], resize_keyboard=True))
+
+
 
 # ========== Меню їдальні ==========
 @dp.message(lambda m: m.text == "🍽️ Меню їдальні")
@@ -489,13 +511,25 @@ async def send_next_pending_news_to_admin(chat_id: int):
     if not items:
         await bot.send_message(chat_id, "Нема новин на перевірку.", reply_markup=admin_menu_keyboard())
         return
-    item = items[0]  # беремо перший
-    text = f"📣 Нова заявка на новину від {item.get('from_username') or item.get('from_id')} ({item.get('time')}):\n\n{item.get('text')}"
+    item = items[0]
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✅ Підтвердити", callback_data="approve_news"),
          InlineKeyboardButton(text="❌ Відхилити", callback_data="reject_news")]
     ])
-    await bot.send_message(chat_id, text, reply_markup=kb)
+    header = f"📣 Нова заявка на новину від {item.get('from_username') or item.get('from_id')} ({item.get('time')}):\n\n"
+    if item.get("type") == "photo":
+        await bot.send_photo(chat_id, item["file_id"], caption=header + (item.get("text","")), reply_markup=kb)
+    elif item.get("type") == "video":
+        await bot.send_video(chat_id, item["file_id"], caption=header + (item.get("text","")), reply_markup=kb)
+    elif item.get("type") == "voice":
+        await bot.send_message(chat_id, header + (item.get("text","")))
+        await bot.send_voice(chat_id, item["file_id"], reply_markup=kb)
+    elif item.get("type") == "video_note":
+        await bot.send_message(chat_id, header + (item.get("text","")))
+        await bot.send_video_note(chat_id, item["file_id"], reply_markup=kb)
+    else:
+        await bot.send_message(chat_id, header + item.get("text",""), reply_markup=kb)
+
 
 async def send_next_pending_meme_to_admin(chat_id: int):
     items = pending_data.get("memes", [])
@@ -511,6 +545,13 @@ async def send_next_pending_meme_to_admin(chat_id: int):
         await bot.send_photo(chat_id, item["file_id"], caption=f"Мем від {display_name_from_item(item)}\n{item.get('text','')}", reply_markup=kb)
     elif item.get("type") == "video":
         await bot.send_video(chat_id, item["file_id"], caption=f"Мем від {display_name_from_item(item)}\n{item.get('text','')}", reply_markup=kb)
+    elif item.get("type") == "voice":
+        await bot.send_message(chat_id, f"Мем (голос) від {display_name_from_item(item)}")
+        await bot.send_voice(chat_id, item["file_id"], reply_markup=kb)
+    elif item.get("type") == "video_note":
+        await bot.send_message(chat_id, f"Мем (відео-кружок) від {display_name_from_item(item)}")
+        await bot.send_video_note(chat_id, item["file_id"], reply_markup=kb)
+
     else:
         await bot.send_message(chat_id, f"Мем від {display_name_from_item(item)}:\n{item.get('text')}", reply_markup=kb)
 
@@ -528,6 +569,12 @@ async def send_next_pending_score_to_admin(chat_id: int):
         await bot.send_photo(chat_id, item["file_id"], caption=f"Заявка від {display_name_from_item(item)}\n{item.get('text','')}", reply_markup=kb)
     elif item.get("type") == "video":
         await bot.send_video(chat_id, item["file_id"], caption=f"Заявка від {display_name_from_item(item)}\n{item.get('text','')}", reply_markup=kb)
+    elif item.get("type") == "voice":
+        await bot.send_message(chat_id, f"Заявка від (голос) від {display_name_from_item(item)}")
+        await bot.send_voice(chat_id, item["file_id"], reply_markup=kb)
+    elif item.get("type") == "video_note":
+        await bot.send_message(chat_id, f"Заявка від (відео-кружок) від {display_name_from_item(item)}")
+        await bot.send_video_note(chat_id, item["file_id"], reply_markup=kb)
     else:
         await bot.send_message(chat_id, f"Заявка від {display_name_from_item(item)}:\n{item.get('text')}", reply_markup=kb)
 
@@ -545,6 +592,12 @@ async def send_next_pending_contact_to_admin(chat_id: int):
         await bot.send_photo(chat_id, item["file_id"], caption=f"Повідомлення від {display_name_from_item(item)}\n{item.get('text','')}", reply_markup=kb)
     elif item.get("type") == "video":
         await bot.send_video(chat_id, item["file_id"], caption=f"Повідомлення від {display_name_from_item(item)}\n{item.get('text','')}", reply_markup=kb)
+    elif item.get("type") == "voice":
+        await bot.send_message(chat_id, f"Повідомлення від (голос) від {display_name_from_item(item)}")
+        await bot.send_voice(chat_id, item["file_id"], reply_markup=kb)
+    elif item.get("type") == "video_note":
+        await bot.send_message(chat_id, f"Повідомлення від (відео-кружок) від {display_name_from_item(item)}")
+        await bot.send_video_note(chat_id, item["file_id"], reply_markup=kb)
     else:
         await bot.send_message(chat_id, f"Повідомлення від {display_name_from_item(item)}:\n{item.get('text')}", reply_markup=kb)
 
@@ -752,18 +805,42 @@ async def generic_handler(message: types.Message):
         await message.answer("Повертаюсь у меню.", reply_markup=main_menu(message.from_user.id == AUTHOR_ID))
         return
 
+        # ADMIN: видалити соцмережу
+    if state == "admin_delete_social" and message.from_user.id == AUTHOR_ID:
+        try:
+            key = text.strip()
+            if key.isdigit():
+                idx = int(key) - 1
+                name = list(socials_data.keys())[idx]
+            else:
+                name = key
+            removed = socials_data.pop(name)
+            save_json("socials.json", socials_data)
+            waiting_for.pop(uid, None)
+            await message.answer(f"Видалено соцмережу: {name} ({removed})", reply_markup=admin_menu_keyboard())
+        except Exception:
+            await message.answer("Некоректне введення.")
+        return
+
     # USER: додати новину (йде у pending)
     if state == "user_add_news":
-        pending_data.setdefault("news", []).append({
-            "from_id": int(message.from_user.id),
-            "from_username": message.from_user.username,
-            "text": text,
-            "time": now_str()
-        })
+        item = {"from_id": int(message.from_user.id), "from_username": message.from_user.username, "time": now_str()}
+        if message.photo:
+            item.update({"type":"photo", "file_id": message.photo[-1].file_id, "text": message.caption or ""})
+        elif message.video:
+            item.update({"type":"video", "file_id": message.video.file_id, "text": message.caption or ""})
+        elif message.voice:
+            item.update({"type":"voice", "file_id": message.voice.file_id, "text": ""})
+        elif message.video_note:
+            item.update({"type":"video_note", "file_id": message.video_note.file_id, "text": ""})
+        else:
+            item.update({"type":"text", "text": text})
+        pending_data.setdefault("news", []).append(item)
         save_json("pending.json", pending_data)
         waiting_for.pop(uid, None)
         await message.answer("Дякую! Твоя новина відправлена адміну на перевірку.", reply_markup=main_menu(message.from_user.id == AUTHOR_ID))
         return
+
 
     # ADMIN: додати новину одразу
     if state == "admin_add_news" and message.from_user.id == AUTHOR_ID:
@@ -777,16 +854,21 @@ async def generic_handler(message: types.Message):
     if state == "user_add_meme":
         item = {"from_id": int(message.from_user.id), "from_username": message.from_user.username, "time": now_str()}
         if message.photo:
-            item["type"] = "photo"; item["file_id"] = message.photo[-1].file_id; item["text"] = message.caption or ""
+            item.update({"type":"photo", "file_id": message.photo[-1].file_id, "text": message.caption or ""})
         elif message.video:
-            item["type"] = "video"; item["file_id"] = message.video.file_id; item["text"] = message.caption or ""
+            item.update({"type":"video", "file_id": message.video.file_id, "text": message.caption or ""})
+        elif message.voice:
+            item.update({"type":"voice", "file_id": message.voice.file_id, "text": ""})
+        elif message.video_note:
+            item.update({"type":"video_note", "file_id": message.video_note.file_id, "text": ""})
         else:
-            item["type"] = "text"; item["text"] = text
+            item.update({"type":"text", "text": text})
         pending_data.setdefault("memes", []).append(item)
         save_json("pending.json", pending_data)
         waiting_for.pop(uid, None)
         await message.answer("Мем відправлено адміну на перевірку.", reply_markup=main_menu(message.from_user.id == AUTHOR_ID))
         return
+
 
     # ADMIN: додати мем одразу
     if state == "admin_add_meme" and message.from_user.id == AUTHOR_ID:
@@ -794,12 +876,17 @@ async def generic_handler(message: types.Message):
             memes_data.append({"type":"photo", "file_id": message.photo[-1].file_id, "text": message.caption or ""})
         elif message.video:
             memes_data.append({"type":"video", "file_id": message.video.file_id, "text": message.caption or ""})
+        elif message.voice:
+            memes_data.append({"type":"voice", "file_id": message.voice.file_id, "text": ""})
+        elif message.video_note:
+            memes_data.append({"type":"video_note", "file_id": message.video_note.file_id, "text": ""})
         else:
             memes_data.append(text)
         save_json("memes.json", memes_data)
         waiting_for.pop(uid, None)
         await message.answer("Мем додано.", reply_markup=admin_menu_keyboard())
         return
+
 
     # ADMIN: додати меню (текст або фото)
     if state == "admin_add_menu" and message.from_user.id == AUTHOR_ID:
@@ -853,31 +940,41 @@ async def generic_handler(message: types.Message):
     if state == "submit_grade":
         item = {"from_id": int(message.from_user.id), "from_username": message.from_user.username, "time": now_str()}
         if message.photo:
-            item["type"] = "photo"; item["file_id"] = message.photo[-1].file_id; item["text"] = message.caption or ""
+            item.update({"type":"photo", "file_id": message.photo[-1].file_id, "text": message.caption or ""})
         elif message.video:
-            item["type"] = "video"; item["file_id"] = message.video.file_id; item["text"] = message.caption or ""
+            item.update({"type":"video", "file_id": message.video.file_id, "text": message.caption or ""})
+        elif message.voice:
+            item.update({"type":"voice", "file_id": message.voice.file_id, "text": ""})
+        elif message.video_note:
+            item.update({"type":"video_note", "file_id": message.video_note.file_id, "text": ""})
         else:
-            item["type"] = "text"; item["text"] = text
+            item.update({"type":"text", "text": text})
         pending_data.setdefault("score_requests", []).append(item)
         save_json("pending.json", pending_data)
         waiting_for.pop(uid, None)
         await message.answer("Заявка відправлена адміну на перевірку.", reply_markup=main_menu(message.from_user.id == AUTHOR_ID))
         return
 
+
     # USER: contact author (лише формує pending)
     if state == "contact_author":
         item = {"from_id": int(message.from_user.id), "from_username": message.from_user.username, "time": now_str()}
         if message.photo:
-            item["type"] = "photo"; item["file_id"] = message.photo[-1].file_id; item["text"] = message.caption or ""
+            item.update({"type":"photo", "file_id": message.photo[-1].file_id, "text": message.caption or ""})
         elif message.video:
-            item["type"] = "video"; item["file_id"] = message.video.file_id; item["text"] = message.caption or ""
+            item.update({"type":"video", "file_id": message.video.file_id, "text": message.caption or ""})
+        elif message.voice:
+            item.update({"type":"voice", "file_id": message.voice.file_id, "text": ""})
+        elif message.video_note:
+            item.update({"type":"video_note", "file_id": message.video_note.file_id, "text": ""})
         else:
-            item["type"] = "text"; item["text"] = text
+            item.update({"type":"text", "text": text})
         pending_data.setdefault("contact", []).append(item)
         save_json("pending.json", pending_data)
         waiting_for.pop(uid, None)
         await message.answer("Повідомлення відправлено адміну на перевірку.", reply_markup=main_menu(message.from_user.id == AUTHOR_ID))
         return
+
 
     # ADMIN: після approve_score — вводить кількість балів
     if isinstance(state, dict) and state.get("action") == "admin_confirm_score" and message.from_user.id == AUTHOR_ID:
@@ -910,6 +1007,15 @@ async def generic_handler(message: types.Message):
                 await bot.send_photo(target_id, message.photo[-1].file_id, caption=message.caption or "")
             elif message.video:
                 await bot.send_video(target_id, message.video.file_id, caption=message.caption or "")
+            elif message.voice:
+                # якщо адмін додав текст у повідомленні — надішлемо текст перед голосом
+                if message.text:
+                    await bot.send_message(target_id, message.text)
+                await bot.send_voice(target_id, message.voice.file_id)
+            elif message.video_note:
+                if message.text:
+                    await bot.send_message(target_id, message.text)
+                await bot.send_video_note(target_id, message.video_note.file_id)
             else:
                 await bot.send_message(target_id, text or "")
             # видаляємо повідомлення з pending
@@ -918,6 +1024,7 @@ async def generic_handler(message: types.Message):
                 save_json("pending.json", pending_data)
         except Exception:
             await message.answer("Не вдалося надіслати повідомлення користувачу (можливо, він заблокував бота).")
+
         waiting_for.pop(uid, None)
         # показати наступне повідомлення або повернутися в адмін-меню
         if pending_data.get("contact"):
@@ -943,7 +1050,7 @@ async def autosave_loop():
 
 
 
-from aiohttp import web
+
 
 async def handle(request):
     return web.Response(text="✅ Bot is alive!")
@@ -953,9 +1060,8 @@ async def start_web_server():
     app.router.add_get("/", handle)
     runner = web.AppRunner(app)
     await runner.setup()
-    site = web.TCPSite(runner, "0.0.0.0", 10000)  # Render зазвичай дає порт через $PORT, але 10000 підійде
+    site = web.TCPSite(runner, "0.0.0.0", int(os.getenv("PORT", 10000)))
     await site.start()
-
 
 
 
