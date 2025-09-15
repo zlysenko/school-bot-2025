@@ -95,6 +95,7 @@ def admin_menu_keyboard() -> ReplyKeyboardMarkup:
         [KeyboardButton(text="➕ Додати соцмережу"), KeyboardButton(text="➖ Видалити соцмережу")],
         [KeyboardButton(text="➕ Додати меню"), KeyboardButton(text="➖ Видалити меню")],
         [KeyboardButton(text="➕ Додати мем"), KeyboardButton(text="➖ Видалити мем")],
+        [KeyboardButton(text="➖ Зняти бали")],
         [KeyboardButton(text="⬅️ Назад")]
     ], resize_keyboard=True)
 
@@ -184,7 +185,7 @@ async def view_memes(message: types.Message):
         else:
             await message.answer(str(item))
 
-    await message.answer("Готово.", reply_markup=main_menu(message.from_user.id == AUTHOR_ID))
+    await message.answer('Це всі меми, якщо маєш якийсь, надсилай в "📤 Додати мем"\nВсі видалені меми зберігаються тут: https://t.me/arhive_mems', reply_markup=main_menu(message.from_user.id == AUTHOR_ID))
 
 # ========== Розклад ==========
 @dp.message(lambda m: m.text == "📅 Розклад")
@@ -359,7 +360,17 @@ async def admin_delete_social_prompt(message: types.Message):
     waiting_for[str(message.from_user.id)] = "admin_delete_social"
     await message.answer(text + "\n\nВведи назву або номер соцмережі для видалення:", reply_markup=ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="⬅️ Назад")]], resize_keyboard=True))
 
-
+@dp.message(lambda m: m.text == "➖ Зняти бали" and m.from_user.id == AUTHOR_ID)
+async def admin_remove_score_prompt(message: types.Message):
+    uid = uid_str_from_message(message)
+    waiting_for[uid] = "admin_remove_score_user"
+    await message.answer(
+        "Введи ID або @username користувача, у якого хочеш зняти бали:",
+        reply_markup=ReplyKeyboardMarkup(
+            keyboard=[[KeyboardButton(text="⬅️ Назад")]],
+            resize_keyboard=True
+        )
+    )
 
 # ========== Меню їдальні ==========
 @dp.message(lambda m: m.text == "🍽️ Меню їдальні")
@@ -802,8 +813,15 @@ async def generic_handler(message: types.Message):
     # Кнопка "⬅️ Назад"
     if text == "⬅️ Назад":
         waiting_for.pop(uid, None)
-        await message.answer("Повертаюсь у меню.", reply_markup=main_menu(message.from_user.id == AUTHOR_ID))
+        stack = menu_stack.get(uid, [])
+        if stack:
+            prev_menu = stack.pop()  # беремо попереднє меню
+            await message.answer("Повертаюсь назад.", reply_markup=prev_menu)
+        else:
+            await message.answer("Повертаюсь у головне меню.", reply_markup=main_menu(message.from_user.id == AUTHOR_ID))
+        menu_stack[uid] = stack
         return
+
 
         # ADMIN: видалити соцмережу
     if state == "admin_delete_social" and message.from_user.id == AUTHOR_ID:
@@ -975,8 +993,56 @@ async def generic_handler(message: types.Message):
         await message.answer("Повідомлення відправлено адміну на перевірку.", reply_markup=main_menu(message.from_user.id == AUTHOR_ID))
         return
 
+    if state == "admin_remove_score_user" and message.from_user.id == AUTHOR_ID:
+        target = text.strip()
+        if target.startswith("@"):
+            target = target[1:]
+            # шукаємо по username
+            found = None
+            for k,v in scores_data.items():
+                # тут ти можеш додати зв'язку uid->username у себе при збереженні
+                # поки що перевіримо user_class
+                if user_class.get(k) and message.from_user.username == target:
+                    found = k
+            if not found:
+                await message.answer("Не знайшов такого username у базі.")
+                return
+            target_id = found
+        else:
+            target_id = target
 
+        waiting_for[uid] = {"action":"admin_remove_score_value", "target_id": target_id}
+        await message.answer(
+            f"Введи кількість балів, які потрібно зняти у {target_id}:",
+            reply_markup=ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="⬅️ Назад")]], resize_keyboard=True)
+        )
+        return
+
+    # ADMIN: зняти бали — вводимо суму
+    if isinstance(state, dict) and state.get("action") == "admin_remove_score_value" and message.from_user.id == AUTHOR_ID:
+        try:
+            val = float(text.strip())
+        except Exception:
+            await message.answer("Введи число (може бути дробове).")
+            return
+
+        target_id = str(state["target_id"])
+        scores_data[target_id] = round(scores_data.get(target_id, 0) - val, 2)
+        if scores_data[target_id] < 0:
+            scores_data[target_id] = 0
+        save_json("scores.json", scores_data)
+
+        waiting_for.pop(uid, None)
+        try:
+            await bot.send_message(int(target_id), f"Адмін зняв у тебе {val}⭐. Новий баланс: {scores_data[target_id]}⭐")
+        except Exception:
+            pass
+
+        await message.answer(f"Знято {val}⭐ у користувача {target_id}. Баланс тепер: {scores_data[target_id]}⭐", reply_markup=admin_menu_keyboard())
+        return
+    
     # ADMIN: після approve_score — вводить кількість балів
+    
     if isinstance(state, dict) and state.get("action") == "admin_confirm_score" and message.from_user.id == AUTHOR_ID:
         try:
             val = float(text.strip())
