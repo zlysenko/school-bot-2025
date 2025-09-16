@@ -23,12 +23,26 @@ bot = Bot(token=API_TOKEN)
 dp = Dispatcher()
 
 # ========== УТИЛІТИ ==========
-def load_json(filename: str, default):
+def load_json(filename: str, default=None):
+    """
+    Безпечне читання JSON. Якщо default не передано — повертаємо порожній dict.
+    Якщо файл відсутній — створимо його з default-значенням.
+    """
+    if default is None:
+        default = {}
     try:
         with open(filename, "r", encoding="utf-8") as f:
             return json.load(f)
+    except FileNotFoundError:
+        # створимо файл з дефолтом і повернемо його
+        try:
+            save_json(filename, default)
+        except Exception:
+            pass
+        return default
     except Exception:
         return default
+
 
 def save_json(filename: str, data):
     with open(filename, "w", encoding="utf-8") as f:
@@ -394,6 +408,7 @@ async def admin_change_points(message: types.Message):
         text + "✍️ Введи у форматі:\n`ID +10` або `@username -5`",
         parse_mode="Markdown"
     )
+
 
 # ========== Меню їдальні ==========
 @dp.message(lambda m: m.text == "🍽️ Меню їдальні")
