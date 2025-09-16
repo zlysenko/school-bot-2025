@@ -124,21 +124,25 @@ async def start_cmd(message: types.Message):
     uid = str(message.from_user.id)
     users_data = load_json("users.json")
 
-    username = message.from_user.username  # 👈 нове
+    username = message.from_user.username
     if uid not in users_data:
         users_data[uid] = {
             "name": message.from_user.full_name,
-            "username": username if username else "",   # 👈 нове
+            "username": username if username else "",
             "points": 0
         }
     else:
-        # якщо у користувача з'явився username — оновимо
+        # якщо у користувача з'явився username — оновлюємо
         if username and not users_data[uid].get("username"):
             users_data[uid]["username"] = username
 
     save_json("users.json", users_data)
 
-    await message.answer("Привіт 👋", reply_markup=main_menu(message.from_user.id == AUTHOR_ID))
+    await message.answer(
+        "Привіт 👋",
+        reply_markup=main_menu(message.from_user.id == AUTHOR_ID)
+    )
+
 
 
 @dp.message(lambda m: m.text == "✏️ Змінити клас")
