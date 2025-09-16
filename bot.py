@@ -95,7 +95,7 @@ def admin_menu_keyboard() -> ReplyKeyboardMarkup:
         [KeyboardButton(text="➕ Додати соцмережу"), KeyboardButton(text="➖ Видалити соцмережу")],
         [KeyboardButton(text="➕ Додати меню"), KeyboardButton(text="➖ Видалити меню")],
         [KeyboardButton(text="➕ Додати мем"), KeyboardButton(text="➖ Видалити мем")],
-        [KeyboardButton(text="➖ Зняти бали")],
+        [KeyboardButton(text="⚖️ Змінити бали")],
         [KeyboardButton(text="⬅️ Назад")]
     ], resize_keyboard=True)
 
@@ -120,13 +120,26 @@ def earn_menu_keyboard() -> ReplyKeyboardMarkup:
 
 # ========== Старт ==========
 @dp.message(Command("start"))
-async def cmd_start(message: types.Message):
-    uid = uid_str_from_message(message)
-    if uid not in user_class:
-        waiting_for[uid] = "choose_class"
-        await message.answer("Привіт! Обери свій клас:", reply_markup=class_selection_keyboard())
+async def start_cmd(message: types.Message):
+    uid = str(message.from_user.id)
+    users_data = load_json("users.json")
+
+    username = message.from_user.username  # 👈 нове
+    if uid not in users_data:
+        users_data[uid] = {
+            "name": message.from_user.full_name,
+            "username": username if username else "",   # 👈 нове
+            "points": 0
+        }
     else:
-        await message.answer("Вітаю знову!", reply_markup=main_menu(message.from_user.id == AUTHOR_ID))
+        # якщо у користувача з'явився username — оновимо
+        if username and not users_data[uid].get("username"):
+            users_data[uid]["username"] = username
+
+    save_json("users.json", users_data)
+
+    await message.answer("Привіт 👋", reply_markup=main_menu(message.from_user.id == AUTHOR_ID))
+
 
 @dp.message(lambda m: m.text == "✏️ Змінити клас")
 async def change_class(message: types.Message):
@@ -360,16 +373,22 @@ async def admin_delete_social_prompt(message: types.Message):
     waiting_for[str(message.from_user.id)] = "admin_delete_social"
     await message.answer(text + "\n\nВведи назву або номер соцмережі для видалення:", reply_markup=ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="⬅️ Назад")]], resize_keyboard=True))
 
-@dp.message(lambda m: m.text == "➖ Зняти бали" and m.from_user.id == AUTHOR_ID)
-async def admin_remove_score_prompt(message: types.Message):
-    uid = uid_str_from_message(message)
-    waiting_for[uid] = "admin_remove_score_user"
+@dp.message(lambda m: m.text == "⚖️ Змінити бали" and m.from_user.id == AUTHOR_ID)
+async def admin_change_points(message: types.Message):
+    users_data = load_json("users.json")
+    if not users_data:
+        await message.answer("Немає користувачів у базі.")
+        return
+
+    text = "📋 Список користувачів:\n\n"
+    for uid, info in users_data.items():
+        uname = f"@{info['username']}" if info.get("username") else f"ID:{uid}"
+        text += f"{uname}\n👤 {info.get('name','Без імені')}\n🏆 Бали: {info.get('points',0)}\n\n"
+
+    waiting_for[str(message.from_user.id)] = "admin_change_points"
     await message.answer(
-        "Введи ID або @username користувача, у якого хочеш зняти бали:",
-        reply_markup=ReplyKeyboardMarkup(
-            keyboard=[[KeyboardButton(text="⬅️ Назад")]],
-            resize_keyboard=True
-        )
+        text + "✍️ Введи у форматі:\n`ID +10` або `@username -5`",
+        parse_mode="Markdown"
     )
 
 # ========== Меню їдальні ==========
@@ -809,6 +828,40 @@ async def generic_handler(message: types.Message):
     uid = uid_str_from_message(message)
     text = message.text or ""
     state = waiting_for.get(uid)
+
+    if state == "admin_change_points" and message.from_user.id == AUTHOR_ID:
+        try:
+            key, diff = text.split()
+            diff = int(diff)
+
+            users_data = load_json("users.json")
+
+            # шукаємо по ID або по username
+            target_uid = None
+            if key.isdigit() and key in users_data:
+                target_uid = key
+            else:
+                for uid, info in users_data.items():
+                    if info.get("username") and ("@" + info["username"]) == key:
+                        target_uid = uid
+                        break
+
+            if not target_uid:
+                await message.answer("❌ Користувач не знайдений.")
+                return
+
+            users_data[target_uid]["points"] = users_data[target_uid].get("points", 0) + diff
+            save_json("users.json", users_data)
+
+            waiting_for.pop(str(message.from_user.id), None)
+            await message.answer(
+                f"✅ Оновлено! У {users_data[target_uid].get('name')} тепер {users_data[target_uid]['points']} балів.",
+                reply_markup=admin_menu_keyboard()
+            )
+        except Exception:
+            await message.answer("❌ Неправильний формат. Використовуй: `ID +10` або `@username -5`")
+        return
+
 
     # Кнопка "⬅️ Назад"
     if text == "⬅️ Назад":
