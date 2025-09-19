@@ -22,55 +22,113 @@ AUTHOR_ID = 1365276193       # <--- свій Telegram ID (адмін/автор)
 bot = Bot(token=API_TOKEN)
 dp = Dispatcher()
 
-# ========== УТИЛІТИ ==========
+@dp.message(Command("whoami"))
+async def whoami_cmd(message: types.Message):
+    await message.answer(f"id = {message.from_user.id}\nusername = {message.from_user.username}\nis_admin = {message.from_user.id == AUTHOR_ID}")
+
+@dp.message(Command("dump_admin_kb"))
+async def dump_admin_kb(message: types.Message):
+    kb = admin_menu_keyboard()
+    rows = []
+    # ReplyKeyboardMarkup.keyboard — список рядків, кожний рядок — список KeyboardButton
+    for row in kb.keyboard:
+        rows.append(" | ".join(btn.text for btn in row))
+    await message.answer("Admin keyboard:\n" + "\n".join(rows))
+
+
+# ================== JSON IO ==================
+def save_json(filename: str, data):
+    try:
+        with open(filename, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+            f.flush()
+            try:
+                os.fsync(f.fileno())
+            except Exception:
+                pass
+    except Exception as e:
+        print(f"[ERROR] Failed to write {filename}: {e}")
+        raise
+
 def load_json(filename: str, default=None):
-    """
-    Безпечне читання JSON. Якщо default не передано — повертаємо порожній dict.
-    Якщо файл відсутній — створимо його з default-значенням.
-    """
     if default is None:
         default = {}
     try:
         with open(filename, "r", encoding="utf-8") as f:
             return json.load(f)
     except FileNotFoundError:
-        # створимо файл з дефолтом і повернемо його
         try:
             save_json(filename, default)
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[WARN] Could not create {filename}: {e}")
         return default
-    except Exception:
+    except Exception as e:
+        print(f"[WARN] Could not load {filename}: {e}")
         return default
 
+# ================== HELPERS for users & points ==================
+USERS_FILE = "users.json"
 
-def save_json(filename: str, data):
-    with open(filename, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+def get_users_dict() -> dict:
+    return load_json(USERS_FILE, default={})
+
+def save_users_dict(users: dict):
+    try:
+        save_json(USERS_FILE, users)
+        print(f"[users.json] saved. Users count: {len(users)}")
+    except Exception as e:
+        print("[ERROR] save_users_dict:", e)
+
+def add_points_for_uid(uid: str, amount: float) -> float:
+    uid = str(uid)
+    users = get_users_dict()
+    users.setdefault(uid, {"name": "", "username": "", "points": 0})
+    new = round(users[uid].get("points", 0) + float(amount), 2)
+    if new < 0:
+        new = 0
+    users[uid]["points"] = new
+    save_users_dict(users)
+    print(f"[add_points] uid={uid}, delta={amount}, new={new}")
+    return new
+
+def set_points_for_uid(uid: str, value: float) -> float:
+    uid = str(uid)
+    users = get_users_dict()
+    users.setdefault(uid, {"name": "", "username": "", "points": 0})
+    users[uid]["points"] = round(float(value), 2)
+    if users[uid]["points"] < 0:
+        users[uid]["points"] = 0
+    save_users_dict(users)
+    print(f"[set_points] uid={uid}, value={users[uid]['points']}")
+    return users[uid]["points"]
+
+def get_points_for_uid(uid: str) -> float:
+    uid = str(uid)
+    users = get_users_dict()
+    return users.get(uid, {}).get("points", 0)
 
 def uid_str_from_message(msg: types.Message) -> str:
     return str(msg.from_user.id)
+
+def now_str() -> str:
+    return str(datetime.datetime.now())
 
 def display_name_from_item(item: Dict[str, Any]) -> str:
     if item.get("from_username"):
         return f"@{item.get('from_username')}"
     return str(item.get("from_id"))
 
-def now_str():
-    return str(datetime.datetime.now())
-
-# ========== Дані ==========
+# ================== DATA FILES ==================
 schedule_data = load_json("schedule.json", {})
 news_data = load_json("news.json", [])
 socials_data = load_json("socials.json", {})
 memes_data = load_json("memes.json", [])
 pending_data = load_json("pending.json", {"news": [], "memes": [], "score_requests": [], "contact": []})
-scores_data = load_json("scores.json", {})
 menu_data = load_json("menu.json", {})
+shop_data = load_json("shop.json", {"file_id": None, "caption": ""})
 
-# ========== Тимчасові стани ==========
+# ================== MEMORY STATE ==================
 waiting_for: Dict[str, Any] = {}
-user_class: Dict[str, str] = {}
 last_click: Dict[str, float] = {}
 menu_stack: Dict[str, list] = {}
 
@@ -132,123 +190,200 @@ def earn_menu_keyboard() -> ReplyKeyboardMarkup:
         [KeyboardButton(text="⬅️ Назад")]
     ], resize_keyboard=True)
 
-# ========== Старт ==========
+
+# ================== HANDLERS ==================
 @dp.message(Command("start"))
-async def start_cmd(message: types.Message):
-    uid = str(message.from_user.id)
-    users_data = load_json("users.json")
+async def cmd_start(message: types.Message):
+    uid = uid_str_from_message(message)
+    users = get_users_dict()
+    users.setdefault(uid, {
+        "name": message.from_user.full_name,
+        "username": message.from_user.username or "",
+        "points": 0
+    })
+    save_users_dict(users)
+    await message.answer("Привіт! Обери свій клас:", reply_markup=class_selection_keyboard())
 
-    username = message.from_user.username
-    if uid not in users_data:
-        users_data[uid] = {
-            "name": message.from_user.full_name,
-            "username": username if username else "",
-            "points": 0
-        }
-    else:
-        # якщо у користувача з'явився username — оновлюємо
-        if username and not users_data[uid].get("username"):
-            users_data[uid]["username"] = username
+@dp.message(Command("whoami"))
+async def whoami_cmd(message: types.Message):
+    await message.answer(f"id = {message.from_user.id}\nusername = {message.from_user.username}\nis_admin = {message.from_user.id == AUTHOR_ID}")
 
+@dp.message(Command("users_list"))
+async def users_list(message: types.Message):
+    if message.from_user.id != AUTHOR_ID:
+        return
+    users = get_users_dict()
+    if not users:
+        await message.answer("Немає користувачів у базі.")
+        return
+    text = "📋 Список користувачів:\n\n"
+    for uid, info in users.items():
+        uname = f"@{info.get('username')}" if info.get('username') else f"ID:{uid}"
+        text += f"{uname}\n👤 {info.get('name','Без імені')}\n🏆 Бали: {info.get('points',0)}\n\n"
+    await message.answer(text)
+
+# команда для зміни балів
+@dp.message(Command("points"))
+async def change_points(message: types.Message):
+    if message.from_user.id != AUTHOR_ID:
+        return
+
+    args = message.text.split()
+    if len(args) < 3:
+        await message.answer("⚠️ Використання: /points <+/-число> <@username|ID>")
+        return
+
+    try:
+        points = int(args[1])
+    except ValueError:
+        await message.answer("⚠️ Кількість балів має бути числом із знаком + або -.")
+        return
+
+    target = args[2]
+    users_data = load_json("users.json", default={})
+    found_uid = None
+
+    for uid, info in users_data.items():
+        if str(uid) == target or f"@{info.get('username')}" == target:
+            found_uid = uid
+            break
+
+    if not found_uid:
+        await message.answer("❌ Користувача не знайдено.")
+        return
+
+    users_data[found_uid]["points"] = users_data[found_uid].get("points", 0) + points
     save_json("users.json", users_data)
 
+    action = "додано" if points > 0 else "знято"
     await message.answer(
-        "Привіт 👋",
-        reply_markup=main_menu(message.from_user.id == AUTHOR_ID)
+        f"✅ У користувача {users_data[found_uid].get('name','Без імені')} "
+        f"(@{users_data[found_uid].get('username','')}) {action} {abs(points)} балів.\n"
+        f"Тепер: {users_data[found_uid]['points']} балів."
     )
 
+
+# ---------- class ----------
+# список допустимих класів — винесемо в змінну для зручності
+CLASSES = ["1","2","3","4","5-А","5-Б","6","7","8","9","10","11"]
+
+@dp.message(lambda m: m.text in CLASSES and not waiting_for.get(str(m.from_user.id)))
+async def set_class(message: types.Message):
+    uid = uid_str_from_message(message)
+    users = get_users_dict()
+    users.setdefault(uid, {"name": message.from_user.full_name, "username": message.from_user.username or "", "points": 0})
+    users[uid]["class"] = message.text
+    save_users_dict(users)
+    await message.answer(f"✅ Твій клас збережено: {message.text}", reply_markup=main_menu(message.from_user.id == AUTHOR_ID))
 
 
 @dp.message(lambda m: m.text == "✏️ Змінити клас")
 async def change_class(message: types.Message):
-    uid = uid_str_from_message(message)
-    waiting_for[uid] = "choose_class"
     await message.answer("Оберіть новий клас:", reply_markup=class_selection_keyboard())
 
-@dp.message(lambda m: waiting_for.get(str(m.from_user.id)) == "choose_class")
-async def set_class(message: types.Message):
-    uid = uid_str_from_message(message)
-    chosen = message.text.strip()
-    if chosen not in ["1","2","3","4","5-А","5-Б","6","7","8","9","10","11","Я вчитель"]:
-        await message.answer("Оберіть клас з клавіатури.")
+
+# ========== Соцмережі ==========
+@dp.message(lambda m: m.text == "🌐 Соцмережі школи")
+async def show_socials(message: types.Message):
+    if not socials_data:
+        await message.answer("Поки що сторінок немає.", reply_markup=main_menu(message.from_user.id == AUTHOR_ID))
         return
-    user_class[uid] = chosen
-    waiting_for.pop(uid, None)
-    await message.answer(f"Клас встановлено: {chosen}", reply_markup=main_menu(message.from_user.id == AUTHOR_ID))
-
-# ========== Новини ==========
-@dp.message(lambda m: m.text == "📰 Новини")
-async def news_menu(message: types.Message):
-    await message.answer("Новини — обери дію:", reply_markup=news_user_keyboard())
-
-@dp.message(lambda m: m.text == "👀 Переглянути новини")
-async def view_news(message: types.Message):
-    if not news_data:
-        await message.answer("Поки що новин немає.", reply_markup=main_menu(message.from_user.id == AUTHOR_ID))
-        return
-    text = "\n\n".join(f"{i+1}. {n}" for i,n in enumerate(news_data))
-    await message.answer("📰 Останні новини:\n\n" + text, reply_markup=main_menu(message.from_user.id == AUTHOR_ID))
-
-# ========== Меми ==========
-@dp.message(lambda m: m.text == "😂 Меми")
-async def memes_menu(message: types.Message):
-    await message.answer("Меми — обери:", reply_markup=memes_user_keyboard())
-
-@dp.message(lambda m: m.text == "👀 Переглянути меми")
-async def view_memes(message: types.Message):
-    if not memes_data:
-        await message.answer("Поки що мемів немає.", reply_markup=main_menu(message.from_user.id == AUTHOR_ID))
-        return
-    for item in memes_data:
-        if isinstance(item, dict) and item.get("type") == "photo":
-            await message.answer_photo(item["file_id"], caption=item.get("text",""))
-        elif isinstance(item, dict) and item.get("type") == "video":
-            await message.answer_video(item["file_id"], caption=item.get("text",""))
-        elif isinstance(item, dict) and item.get("type") == "voice":
-            # якщо хочеш підпис до голосу — зберігай text і відправляй його окремим повідомленням
-            if item.get("text"):
-                await message.answer(item.get("text"))
-            await message.answer_voice(item["file_id"])
-        elif isinstance(item, dict) and item.get("type") == "video_note":
-            if item.get("text"):
-                await message.answer(item.get("text"))
-            await message.answer_video_note(item["file_id"])
-        else:
-            await message.answer(str(item))
-
-    await message.answer('Це всі меми, якщо маєш якийсь, надсилай в "📤 Додати мем"\nВсі видалені меми зберігаються тут: https://t.me/arhive_mems', reply_markup=main_menu(message.from_user.id == AUTHOR_ID))
-
-# ========== Розклад ==========
-@dp.message(lambda m: m.text == "📅 Розклад")
-async def ask_day_for_schedule(message: types.Message):
-    uid = uid_str_from_message(message)
-    if uid not in user_class:
-        await message.answer("Спочатку оберіть свій клас:", reply_markup=class_selection_keyboard())
-        return
-    await message.answer("Оберіть день:", reply_markup=day_selection_keyboard())
-
-@dp.message(lambda m: m.text in ["Понеділок","Вівторок","Середа","Четвер","П’ятниця"])
-async def send_schedule(message: types.Message):
-    uid = uid_str_from_message(message)
-    if uid not in user_class:
-        await message.answer("Спочатку оберіть свій клас:", reply_markup=class_selection_keyboard())
-        return
-    cl = user_class[uid]
-    lessons = schedule_data.get(cl, {}).get(message.text, "❌ Розклад ще не додано")
-    await message.answer(f"📅 Розклад для {cl} — {message.text}:\n\n{lessons}", reply_markup=main_menu(message.from_user.id == AUTHOR_ID))
-
-@dp.message(lambda m: m.text == "🔔 Розклад дзвінків")
-async def bell_schedule(message: types.Message):
-    text = ("🔔 Розклад дзвінків:\n"
-        "1 урок: 08:30 – 09:15\n"
-        "2 урок: 09:25 – 10:10\n"
-        "3 урок: 10:20 – 11:05\n"
-        "4 урок: 11:25 – 12:10\n"
-        "5 урок: 12:30 – 13:15\n"
-        "6 урок: 13:25 – 14:10\n"
-        "7 урок: 14:20 – 15:05\n"
-        "8 урок: 15:15 - 16:00")
+    text = "Наші сторінки:\n" + "\n".join(f"{k}: {v}" for k,v in socials_data.items())
     await message.answer(text, reply_markup=main_menu(message.from_user.id == AUTHOR_ID))
+
+@dp.message(lambda m: m.text == "➕ Додати соцмережу" and m.from_user.id == AUTHOR_ID)
+async def admin_add_social_prompt(message: types.Message):
+    waiting_for[str(message.from_user.id)] = "admin_add_social"
+    await message.answer("Введи у форматі: Назва | Посилання", reply_markup=ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="⬅️ Назад")]], resize_keyboard=True))
+
+@dp.message(lambda m: m.text == "➖ Видалити соцмережу" and m.from_user.id == AUTHOR_ID)
+async def admin_delete_social_prompt(message: types.Message):
+    if not socials_data:
+        await message.answer("Соцмереж поки немає.", reply_markup=admin_menu_keyboard())
+        return
+    text = "Список соцмереж:\n" + "\n".join(f"{i+1}. {name}: {link}" for i, (name, link) in enumerate(socials_data.items()))
+    waiting_for[str(message.from_user.id)] = "admin_delete_social"
+    await message.answer(text + "\n\nВведи назву або номер соцмережі для видалення:", reply_markup=ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="⬅️ Назад")]], resize_keyboard=True))
+
+
+
+# ------------menu-----------------
+
+# ========== Меню їдальні ==========
+@dp.message(lambda m: m.text == "🍽️ Меню їдальні")
+async def show_menu(message: types.Message):
+    today = str(datetime.date.today())
+    info = menu_data.get(today)
+    if not info:
+        await message.answer("❌ Меню на сьогодні ще не додано.", reply_markup=main_menu(message.from_user.id == AUTHOR_ID))
+        return
+    if info.get("photo"):
+        await message.answer_photo(info["photo"], caption=info.get("text",""), reply_markup=main_menu(message.from_user.id == AUTHOR_ID))
+    else:
+        await message.answer(f"🍽️ Меню на {today}:\n\n{info.get('text','')}", reply_markup=main_menu(message.from_user.id == AUTHOR_ID))
+
+@dp.message(lambda m: m.text == "➕ Додати меню" and m.from_user.id == AUTHOR_ID)
+async def admin_add_menu_prompt(message: types.Message):
+    waiting_for[str(message.from_user.id)] = "admin_add_menu"
+    await message.answer("Надішли текст меню або фото (воно встановиться на сьогодні):", reply_markup=ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="⬅️ Назад")]], resize_keyboard=True))
+
+@dp.message(lambda m: m.text == "➖ Видалити меню" and m.from_user.id == AUTHOR_ID)
+async def admin_delete_menu_today(message: types.Message):
+    today = str(datetime.date.today())
+    if today in menu_data:
+        del menu_data[today]
+        save_json("menu.json", menu_data)
+        await message.answer("Меню на сьогодні видалено.", reply_markup=admin_menu_keyboard())
+    else:
+        await message.answer("Меню на сьогодні відсутнє.", reply_markup=admin_menu_keyboard())
+
+
+
+# -----------------shop---------------------
+# ========== Магазин ==========
+shop_data = load_json("shop.json", {"file_id": None, "caption": ""})
+
+@dp.message(lambda m: m.text == "🛍️ Магазин")
+async def open_shop(message: types.Message):
+    if shop_data.get("file_id"):
+        # показуємо фото з підписом
+        await message.answer_photo(shop_data["file_id"], caption=shop_data.get("caption", ""))
+    else:
+        await message.answer("Магазин ще не налаштований.")
+
+# =======магазин адмін=========
+@dp.message(lambda m: m.text == "🛍️ Змінити магазин" and m.from_user.id == AUTHOR_ID)
+async def admin_change_shop(message: types.Message):
+    waiting_for[str(message.from_user.id)] = "set_shop_photo"
+    await message.answer("Надішліть нове фото магазину з підписом.")
+
+@dp.message(lambda m: waiting_for.get(str(m.from_user.id)) == "set_shop_photo" and (m.photo or m.document))
+async def save_shop_photo(message: types.Message):
+    uid = str(message.from_user.id)
+    waiting_for.pop(uid, None)
+
+    if message.photo:
+        file_id = message.photo[-1].file_id
+    else:
+        file_id = message.document.file_id
+
+    shop_data["file_id"] = file_id
+    shop_data["caption"] = message.caption or ""
+    save_json("shop.json", shop_data)
+
+    await message.answer("✅ Фото магазину оновлено.", reply_markup=admin_menu_keyboard())
+
+
+
+
+# ========== Зв'язок з автором ==========
+@dp.message(lambda m: m.text == "✉️ Зв’язатись з автором")
+async def contact_author(message: types.Message):
+    uid = uid_str_from_message(message)
+    waiting_for[uid] = "contact_author"
+    await message.answer("Напиши повідомлення автору (текст/фото/відео з підписом). Воно піде адміну на перевірку.", reply_markup=ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="⬅️ Назад")]], resize_keyboard=True))
+
+
 
 # ========== Новини ==========
 @dp.message(lambda m: m.text == "📰 Новини")
@@ -286,38 +421,7 @@ async def admin_delete_news_prompt(message: types.Message):
     waiting_for[str(message.from_user.id)] = "admin_delete_news"
     await message.answer(text + "\n\nВведи номер новини для видалення:", reply_markup=ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="⬅️ Назад")]], resize_keyboard=True))
 
-# ========== Магазин ==========
-shop_data = load_json("shop.json", {"file_id": None, "caption": ""})
 
-@dp.message(lambda m: m.text == "🛍️ Магазин")
-async def open_shop(message: types.Message):
-    if shop_data.get("file_id"):
-        # показуємо фото з підписом
-        await message.answer_photo(shop_data["file_id"], caption=shop_data.get("caption", ""))
-    else:
-        await message.answer("Магазин ще не налаштований.")
-
-# =======магазин адмін=========
-@dp.message(lambda m: m.text == "🛍️ Змінити магазин" and m.from_user.id == AUTHOR_ID)
-async def admin_change_shop(message: types.Message):
-    waiting_for[str(message.from_user.id)] = "set_shop_photo"
-    await message.answer("Надішліть нове фото магазину з підписом.")
-
-@dp.message(lambda m: waiting_for.get(str(m.from_user.id)) == "set_shop_photo" and (m.photo or m.document))
-async def save_shop_photo(message: types.Message):
-    uid = str(message.from_user.id)
-    waiting_for.pop(uid, None)
-
-    if message.photo:
-        file_id = message.photo[-1].file_id
-    else:
-        file_id = message.document.file_id
-
-    shop_data["file_id"] = file_id
-    shop_data["caption"] = message.caption or ""
-    save_json("shop.json", shop_data)
-
-    await message.answer("✅ Фото магазину оновлено.", reply_markup=admin_menu_keyboard())
 
 # ========== Меми ==========
 @dp.message(lambda m: m.text == "😂 Меми")
@@ -334,9 +438,20 @@ async def view_memes(message: types.Message):
             await message.answer_photo(item["file_id"], caption=item.get("text",""))
         elif isinstance(item, dict) and item.get("type") == "video":
             await message.answer_video(item["file_id"], caption=item.get("text",""))
+        elif isinstance(item, dict) and item.get("type") == "voice":
+            # якщо хочеш підпис до голосу — зберігай text і відправляй його окремим повідомленням
+            if item.get("text"):
+                await message.answer(item.get("text"))
+            await message.answer_voice(item["file_id"])
+        elif isinstance(item, dict) and item.get("type") == "video_note":
+            if item.get("text"):
+                await message.answer(item.get("text"))
+            await message.answer_video_note(item["file_id"])
         else:
             await message.answer(str(item))
+
     await message.answer('Це всі меми, якщо маєш якийсь, надсилай в "📤 Додати мем"\nВсі видалені меми зберігаються тут: https://t.me/arhive_mems', reply_markup=main_menu(message.from_user.id == AUTHOR_ID))
+
 
 @dp.message(lambda m: m.text == "📤 Додати мем")
 async def user_add_meme_prompt(message: types.Message):
@@ -368,91 +483,83 @@ async def admin_delete_meme_prompt(message: types.Message):
     waiting_for[str(message.from_user.id)] = "admin_delete_meme"
     await message.answer("Список мемів:\n" + "\n".join(text_lines) + "\n\nВведи номер мему для видалення:", reply_markup=ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="⬅️ Назад")]], resize_keyboard=True))
 
-# ========== Соцмережі ==========
-@dp.message(lambda m: m.text == "🌐 Соцмережі школи")
-async def show_socials(message: types.Message):
-    if not socials_data:
-        await message.answer("Поки що сторінок немає.", reply_markup=main_menu(message.from_user.id == AUTHOR_ID))
+
+# ---------- schedule ----------
+@dp.message(lambda m: m.text == "📅 Розклад")
+async def ask_day_for_schedule(message: types.Message):
+    uid = uid_str_from_message(message)
+    users = get_users_dict()
+    if not users.get(uid, {}).get("class"):
+        await message.answer("Спочатку оберіть свій клас:", reply_markup=class_selection_keyboard())
         return
-    text = "Наші сторінки:\n" + "\n".join(f"{k}: {v}" for k,v in socials_data.items())
+    await message.answer("Оберіть день:", reply_markup=day_selection_keyboard())
+
+@dp.message(lambda m: m.text in ["Понеділок", "Вівторок", "Середа", "Четвер", "П’ятниця"])
+async def show_schedule(message: types.Message):
+    uid = uid_str_from_message(message)
+    users = get_users_dict()
+    user_class = users.get(uid, {}).get("class")
+    if not user_class:
+        await message.answer("Спочатку обери свій клас:", reply_markup=class_selection_keyboard())
+        return
+    schedule = load_json("schedule.json", default={})
+    lessons = schedule.get(user_class, {}).get(message.text)
+    if not lessons:
+        await message.answer("❌ Розклад ще не додано.", reply_markup=main_menu(message.from_user.id == AUTHOR_ID))
+        return
+    await message.answer(f"📅 Розклад для {user_class} — {message.text}:\n\n{lessons}", reply_markup=main_menu(message.from_user.id == AUTHOR_ID))
+
+@dp.message(lambda m: m.text == "⬅️ Вийти")
+async def exit_to_main(message: types.Message):
+    await message.answer("Повертаюсь у головне меню.", reply_markup=main_menu(message.from_user.id == AUTHOR_ID))
+
+@dp.message(lambda m: m.text == "🔔 Розклад дзвінків")
+async def bell_schedule(message: types.Message):
+    text = (
+        "🔔 Розклад дзвінків:\n"
+        "1 урок: 08:30 – 09:15\n"
+        "2 урок: 09:25 – 10:10\n"
+        "3 урок: 10:20 – 11:05\n"
+        "4 урок: 11:25 – 12:10\n"
+        "5 урок: 12:30 – 13:15\n"
+        "6 урок: 13:25 – 14:10\n"
+        "7 урок: 14:20 – 15:05\n"
+        "8 урок: 15:15 - 16:00"
+    )
     await message.answer(text, reply_markup=main_menu(message.from_user.id == AUTHOR_ID))
 
-@dp.message(lambda m: m.text == "➕ Додати соцмережу" and m.from_user.id == AUTHOR_ID)
-async def admin_add_social_prompt(message: types.Message):
-    waiting_for[str(message.from_user.id)] = "admin_add_social"
-    await message.answer("Введи у форматі: Назва | Посилання", reply_markup=ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="⬅️ Назад")]], resize_keyboard=True))
 
-@dp.message(lambda m: m.text == "➖ Видалити соцмережу" and m.from_user.id == AUTHOR_ID)
-async def admin_delete_social_prompt(message: types.Message):
-    if not socials_data:
-        await message.answer("Соцмереж поки немає.", reply_markup=admin_menu_keyboard())
-        return
-    text = "Список соцмереж:\n" + "\n".join(f"{i+1}. {name}: {link}" for i, (name, link) in enumerate(socials_data.items()))
-    waiting_for[str(message.from_user.id)] = "admin_delete_social"
-    await message.answer(text + "\n\nВведи назву або номер соцмережі для видалення:", reply_markup=ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="⬅️ Назад")]], resize_keyboard=True))
 
+# -----------змінити бали--------------
+
+# ⚖️ Змінити бали (адмін)
 @dp.message(lambda m: m.text == "⚖️ Змінити бали" and m.from_user.id == AUTHOR_ID)
 async def admin_change_points(message: types.Message):
-    users_data = load_json("users.json")
-    if not users_data:
+    users = get_users_dict()
+    if not users:
         await message.answer("Немає користувачів у базі.")
         return
 
     text = "📋 Список користувачів:\n\n"
-    for uid, info in users_data.items():
+    for uid, info in users.items():
         uname = f"@{info['username']}" if info.get("username") else f"ID:{uid}"
         text += f"{uname}\n👤 {info.get('name','Без імені')}\n🏆 Бали: {info.get('points',0)}\n\n"
 
     waiting_for[str(message.from_user.id)] = "admin_change_points"
     await message.answer(
         text + "✍️ Введи у форматі:\n`ID +10` або `@username -5`",
-        parse_mode="Markdown"
+        # parse_mode="Markdown"
     )
 
 
-# ========== Меню їдальні ==========
-@dp.message(lambda m: m.text == "🍽️ Меню їдальні")
-async def show_menu(message: types.Message):
-    today = str(datetime.date.today())
-    info = menu_data.get(today)
-    if not info:
-        await message.answer("❌ Меню на сьогодні ще не додано.", reply_markup=main_menu(message.from_user.id == AUTHOR_ID))
-        return
-    if info.get("photo"):
-        await message.answer_photo(info["photo"], caption=info.get("text",""), reply_markup=main_menu(message.from_user.id == AUTHOR_ID))
-    else:
-        await message.answer(f"🍽️ Меню на {today}:\n\n{info.get('text','')}", reply_markup=main_menu(message.from_user.id == AUTHOR_ID))
 
-@dp.message(lambda m: m.text == "➕ Додати меню" and m.from_user.id == AUTHOR_ID)
-async def admin_add_menu_prompt(message: types.Message):
-    waiting_for[str(message.from_user.id)] = "admin_add_menu"
-    await message.answer("Надішли текст меню або фото (воно встановиться на сьогодні):", reply_markup=ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="⬅️ Назад")]], resize_keyboard=True))
-
-@dp.message(lambda m: m.text == "➖ Видалити меню" and m.from_user.id == AUTHOR_ID)
-async def admin_delete_menu_today(message: types.Message):
-    today = str(datetime.date.today())
-    if today in menu_data:
-        del menu_data[today]
-        save_json("menu.json", menu_data)
-        await message.answer("Меню на сьогодні видалено.", reply_markup=admin_menu_keyboard())
-    else:
-        await message.answer("Меню на сьогодні відсутнє.", reply_markup=admin_menu_keyboard())
-
-# ========== Зв'язок з автором ==========
-@dp.message(lambda m: m.text == "✉️ Зв’язатись з автором")
-async def contact_author(message: types.Message):
-    uid = uid_str_from_message(message)
-    waiting_for[uid] = "contact_author"
-    await message.answer("Напиши повідомлення автору (текст/фото/відео з підписом). Воно піде адміну на перевірку.", reply_markup=ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="⬅️ Назад")]], resize_keyboard=True))
-
-# ========== Заробити бали (клікер, RPS, заявка на бали) ==========
+# ---------- earn points ----------
 @dp.message(lambda m: m.text == "⭐ Заробити бали")
 async def earn_menu(message: types.Message):
     uid = uid_str_from_message(message)
-    bal = scores_data.get(uid, 0)
+    bal = get_points_for_uid(uid)
     await message.answer(f"Твій баланс: {bal} ⭐\nОбери спосіб:", reply_markup=earn_menu_keyboard())
 
-# Клікер
 @dp.message(lambda m: m.text == "Клікер 🖱️")
 async def clicker_start(message: types.Message):
     uid = uid_str_from_message(message)
@@ -463,17 +570,18 @@ async def clicker_start(message: types.Message):
 @dp.message(lambda m: m.text == "Натиснути!")
 async def clicker_press(message: types.Message):
     uid = uid_str_from_message(message)
-    if waiting_for.get(uid) != "clicker_mode": return
+    if waiting_for.get(uid) != "clicker_mode":
+        return
     now = time.time()
     if now - last_click.get(uid,0) < 60:
         rem = int(60 - (now - last_click.get(uid,0)))
         await message.answer(f"Почекай {rem}s перед наступним кліком.")
         return
     gain = round(random.uniform(0.3,1.0),2)
-    scores_data[uid] = round(scores_data.get(uid,0) + gain,2)
-    save_json("scores.json", scores_data)
+    new_bal = add_points_for_uid(uid, gain)
     last_click[uid] = now
-    await message.answer(f"Отримано +{gain}⭐. Баланс: {scores_data[uid]}⭐")
+    waiting_for.pop(uid, None)
+    await message.answer(f"Отримано +{gain}⭐. Баланс: {new_bal}⭐", reply_markup=main_menu(message.from_user.id == AUTHOR_ID))
 
 # RPS
 @dp.message(lambda m: m.text and m.text.startswith("Камінь/Ножиці/Папір"))
@@ -482,7 +590,7 @@ async def rps_prompt(message: types.Message):
     waiting_for[uid] = "rps_waiting_bet"
     await message.answer("Вкажи ставку в балах (число):", reply_markup=ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="⬅️ Назад")]], resize_keyboard=True))
 
-@dp.message(lambda m: waiting_for.get(str(m.from_user.id)) == "rps_waiting_bet")
+@dp.message(lambda m: waiting_for.get(uid_str_from_message(m)) == "rps_waiting_bet")
 async def rps_receive_bet(message: types.Message):
     uid = uid_str_from_message(message)
     try:
@@ -490,18 +598,18 @@ async def rps_receive_bet(message: types.Message):
     except Exception:
         await message.answer("Введи число (наприклад: 1).")
         return
-    if bet <= 0 or bet > scores_data.get(uid,0):
+    bal = get_points_for_uid(uid)
+    if bet <= 0 or bet > bal:
         await message.answer("Некоректна ставка або недостатньо балів.")
         return
     waiting_for[uid] = {"action":"rps_choose","bet":bet}
     kb = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="Камінь"),KeyboardButton(text="Ножиці"),KeyboardButton(text="Папір")],[KeyboardButton(text="⬅️ Назад")]], resize_keyboard=True)
     await message.answer("Оберіть: Камінь / Ножиці / Папір", reply_markup=kb)
 
-@dp.message(lambda m: isinstance(waiting_for.get(str(m.from_user.id)), dict) and waiting_for.get(str(m.from_user.id)).get("action") == "rps_choose")
+@dp.message(lambda m: isinstance(waiting_for.get(uid_str_from_message(m)), dict) and waiting_for.get(uid_str_from_message(m)).get("action") == "rps_choose")
 async def rps_choose(message: types.Message):
     uid = uid_str_from_message(message)
-    mapping = {"камінь":"rock","ножиці":"scissors","папір":"paper",
-               "rock":"rock","scissors":"scissors","paper":"paper"}
+    mapping = {"камінь":"rock","ножиці":"scissors","папір":"paper","rock":"rock","scissors":"scissors","paper":"paper"}
     choice = message.text.strip().lower()
     if choice not in mapping:
         await message.answer("Вибери 'Камінь', 'Ножиці' або 'Папір'.")
@@ -513,14 +621,15 @@ async def rps_choose(message: types.Message):
     if user_choice == bot_choice:
         result_text = "Нічия. Ставка повертається."
     elif (user_choice, bot_choice) in wins:
-        scores_data[uid] = round(scores_data.get(uid,0) + bet,2)
+        new_bal = add_points_for_uid(uid, bet)
         result_text = f"Ти виграв! +{bet}⭐"
     else:
-        scores_data[uid] = round(scores_data.get(uid,0) - bet,2)
+        new_bal = add_points_for_uid(uid, -bet)
         result_text = f"Ти програв. -{bet}⭐"
-    save_json("scores.json", scores_data)
+    save_users_dict(get_users_dict())
     waiting_for.pop(uid, None)
-    await message.answer(f"Твій вибір: {user_choice}\nБот: {bot_choice}\n{result_text}\nБаланс: {scores_data.get(uid,0)}⭐", reply_markup=main_menu(message.from_user.id == AUTHOR_ID))
+    bal = get_points_for_uid(uid)
+    await message.answer(f"Твій вибір: {user_choice}\nБот: {bot_choice}\n{result_text}\nБаланс: {bal}⭐", reply_markup=main_menu(message.from_user.id == AUTHOR_ID))
 
 # Надіслати оцінку на перевірку (можна фото+текст)
 @dp.message(lambda m: m.text == "📤 Надіслати оцінку на перевірку")
@@ -528,6 +637,8 @@ async def send_score_request_prompt(message: types.Message):
     uid = uid_str_from_message(message)
     waiting_for[uid] = "submit_grade"
     await message.answer("Надішли заявку з описом та (опційно) фото/відео (підпиши).", reply_markup=ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="⬅️ Назад")]], resize_keyboard=True))
+
+
 
 # ========== Адмін панель ==========
 @dp.message(lambda m: m.text == "⚙️ Адмін-меню" and m.from_user.id == AUTHOR_ID)
@@ -552,7 +663,8 @@ async def admin_check_pending(message: types.Message):
     ])
     await message.answer(text, reply_markup=kb)
 
-# Інші адмін кнопки: додати/видалити мем/новину/розклад обробляються нижче у generic_handler або окремих хендлерах
+
+
 
 # ========== Відправка наступного елементу адміну (функції) ==========
 async def send_next_pending_news_to_admin(chat_id: int):
@@ -666,6 +778,7 @@ async def cb_admin_pending_scores(cb: types.CallbackQuery):
     await send_next_pending_score_to_admin(cb.from_user.id)
     await cb.answer()
 
+
 @dp.callback_query(lambda c: c.data == "admin_pending_contact" and c.from_user.id == AUTHOR_ID)
 async def cb_admin_pending_contact(cb: types.CallbackQuery):
     await send_next_pending_contact_to_admin(cb.from_user.id)
@@ -777,6 +890,41 @@ async def cb_reject_meme(cb: types.CallbackQuery):
         await bot.send_message(cb.from_user.id, "Всі меми оброблено.", reply_markup=admin_menu_keyboard())
     await cb.answer("Мем відхилено.")
 
+
+
+# Повідомлення автору (contact)
+@dp.callback_query(lambda c: c.data == "reply_contact" and c.from_user.id == AUTHOR_ID)
+async def cb_reply_contact(cb: types.CallbackQuery):
+    items = pending_data.get("contact", [])
+    if not items:
+        await cb.answer("Нема повідомлень.", show_alert=True)
+        return
+    item = items[0]  # не видаляємо ще — дочекаємось відповіді
+    # встановлюємо стан для адміна: він має відправити текст/фото/відео, який ми потім надішлемо користувачу
+    waiting_for[str(cb.from_user.id)] = {"action":"admin_reply_contact", "target_id": item["from_id"]}
+    await bot.send_message(cb.from_user.id, f"Введи відповідь користувачу {display_name_from_item(item)} (можна текст або надіслати фото/відео з підписом).")
+    await cb.answer()
+
+@dp.callback_query(lambda c: c.data == "reject_contact" and c.from_user.id == AUTHOR_ID)
+async def cb_reject_contact(cb: types.CallbackQuery):
+    items = pending_data.get("contact", [])
+    if not items:
+        await cb.answer("Нема повідомлень.", show_alert=True)
+        return
+    item = items.pop(0)
+    save_json("pending.json", pending_data)
+    try:
+        await bot.send_message(item["from_id"], "Ваше повідомлення адміністратор відхилив.")
+    except Exception:
+        pass
+    if pending_data.get("contact"):
+        await send_next_pending_contact_to_admin(cb.from_user.id)
+    else:
+        await bot.send_message(cb.from_user.id, "Всі повідомлення оброблено.", reply_markup=admin_menu_keyboard())
+    await cb.answer("Повідомлення відхилено.")
+
+
+
 # Заявки на бали
 @dp.callback_query(lambda c: c.data == "approve_score" and c.from_user.id == AUTHOR_ID)
 async def cb_approve_score(cb: types.CallbackQuery):
@@ -810,36 +958,9 @@ async def cb_reject_score(cb: types.CallbackQuery):
         await bot.send_message(cb.from_user.id, "Всі заявки на бали оброблено.", reply_markup=admin_menu_keyboard())
     await cb.answer("Заявка відхилена.")
 
-# Повідомлення автору (contact)
-@dp.callback_query(lambda c: c.data == "reply_contact" and c.from_user.id == AUTHOR_ID)
-async def cb_reply_contact(cb: types.CallbackQuery):
-    items = pending_data.get("contact", [])
-    if not items:
-        await cb.answer("Нема повідомлень.", show_alert=True)
-        return
-    item = items[0]  # не видаляємо ще — дочекаємось відповіді
-    # встановлюємо стан для адміна: він має відправити текст/фото/відео, який ми потім надішлемо користувачу
-    waiting_for[str(cb.from_user.id)] = {"action":"admin_reply_contact", "target_id": item["from_id"]}
-    await bot.send_message(cb.from_user.id, f"Введи відповідь користувачу {display_name_from_item(item)} (можна текст або надіслати фото/відео з підписом).")
-    await cb.answer()
 
-@dp.callback_query(lambda c: c.data == "reject_contact" and c.from_user.id == AUTHOR_ID)
-async def cb_reject_contact(cb: types.CallbackQuery):
-    items = pending_data.get("contact", [])
-    if not items:
-        await cb.answer("Нема повідомлень.", show_alert=True)
-        return
-    item = items.pop(0)
-    save_json("pending.json", pending_data)
-    try:
-        await bot.send_message(item["from_id"], "Ваше повідомлення адміністратор відхилив.")
-    except Exception:
-        pass
-    if pending_data.get("contact"):
-        await send_next_pending_contact_to_admin(cb.from_user.id)
-    else:
-        await bot.send_message(cb.from_user.id, "Всі повідомлення оброблено.", reply_markup=admin_menu_keyboard())
-    await cb.answer("Повідомлення відхилено.")
+
+
 
 # ========== Обробка загальних повідомлень коли waiting_for встановлений ==========
 @dp.message()
@@ -847,40 +968,6 @@ async def generic_handler(message: types.Message):
     uid = uid_str_from_message(message)
     text = message.text or ""
     state = waiting_for.get(uid)
-
-    if state == "admin_change_points" and message.from_user.id == AUTHOR_ID:
-        try:
-            key, diff = text.split()
-            diff = int(diff)
-
-            users_data = load_json("users.json")
-
-            # шукаємо по ID або по username
-            target_uid = None
-            if key.isdigit() and key in users_data:
-                target_uid = key
-            else:
-                for uid, info in users_data.items():
-                    if info.get("username") and ("@" + info["username"]) == key:
-                        target_uid = uid
-                        break
-
-            if not target_uid:
-                await message.answer("❌ Користувач не знайдений.")
-                return
-
-            users_data[target_uid]["points"] = users_data[target_uid].get("points", 0) + diff
-            save_json("users.json", users_data)
-
-            waiting_for.pop(str(message.from_user.id), None)
-            await message.answer(
-                f"✅ Оновлено! У {users_data[target_uid].get('name')} тепер {users_data[target_uid]['points']} балів.",
-                reply_markup=admin_menu_keyboard()
-            )
-        except Exception:
-            await message.answer("❌ Неправильний формат. Використовуй: `ID +10` або `@username -5`")
-        return
-
 
     # Кнопка "⬅️ Назад"
     if text == "⬅️ Назад":
@@ -893,6 +980,7 @@ async def generic_handler(message: types.Message):
             await message.answer("Повертаюсь у головне меню.", reply_markup=main_menu(message.from_user.id == AUTHOR_ID))
         menu_stack[uid] = stack
         return
+
 
 
         # ADMIN: видалити соцмережу
@@ -1065,28 +1153,83 @@ async def generic_handler(message: types.Message):
         await message.answer("Повідомлення відправлено адміну на перевірку.", reply_markup=main_menu(message.from_user.id == AUTHOR_ID))
         return
 
+    # ADMIN: змінити бали вручну
+    if state == "admin_change_points" and message.from_user.id == AUTHOR_ID:
+        try:
+            key, diff_text = text.split()
+            diff = int(diff_text)
+
+            users = get_users_dict()
+
+            # шукаємо по ID або по username
+            target_uid = None
+            if key.isdigit() and key in users:
+                target_uid = key
+            else:
+                for k, info in users.items():
+                    if info.get("username") and ("@" + info["username"]) == key:
+                        target_uid = k
+                        break
+
+            if not target_uid:
+                await message.answer("❌ Користувача не знайдено.")
+                return
+
+            new_balance = add_points_for_uid(target_uid, diff)
+            waiting_for.pop(uid, None)
+
+            # ✅ повідомлення адміну
+            await message.answer(
+                f"✅ Успіх! У {users[target_uid].get('name','Без імені')} тепер {new_balance}⭐.",
+                reply_markup=admin_menu_keyboard()
+            )
+
+            # ✅ повідомлення користувачу
+            try:
+                if diff >= 0:
+                    await bot.send_message(
+                        int(target_uid),
+                        f"🎉 Тобі додали {diff}⭐!\nТепер твій баланс: {new_balance}⭐"
+                    )
+                else:
+                    await bot.send_message(
+                        int(target_uid),
+                        f"⚠️ У тебе зняли {abs(diff)}⭐.\nТепер твій баланс: {new_balance}⭐"
+                    )
+            except Exception as e:
+                print("Не вдалось повідомити користувача:", e)
+
+        except Exception:
+            await message.answer("❌ Неправильний формат. Використовуй: ID +10 або @username -5")
+        return
+
+
+    # ADMIN: зняти бали — спочатку вводимо ID або username
     if state == "admin_remove_score_user" and message.from_user.id == AUTHOR_ID:
         target = text.strip()
+        users = get_users_dict()
+
         if target.startswith("@"):
             target = target[1:]
-            # шукаємо по username
             found = None
-            for k,v in scores_data.items():
-                # тут ти можеш додати зв'язку uid->username у себе при збереженні
-                # поки що перевіримо user_class
-                if user_class.get(k) and message.from_user.username == target:
+            for k, v in users.items():
+                if v.get("username") == target:
                     found = k
+                    break
             if not found:
-                await message.answer("Не знайшов такого username у базі.")
+                await message.answer("❌ Не знайшов такого username у базі.")
                 return
             target_id = found
         else:
             target_id = target
 
-        waiting_for[uid] = {"action":"admin_remove_score_value", "target_id": target_id}
+        waiting_for[uid] = {"action": "admin_remove_score_value", "target_id": target_id}
         await message.answer(
             f"Введи кількість балів, які потрібно зняти у {target_id}:",
-            reply_markup=ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="⬅️ Назад")]], resize_keyboard=True)
+            reply_markup=ReplyKeyboardMarkup(
+                keyboard=[[KeyboardButton(text="⬅️ Назад")]],
+                resize_keyboard=True
+            )
         )
         return
 
@@ -1099,41 +1242,50 @@ async def generic_handler(message: types.Message):
             return
 
         target_id = str(state["target_id"])
-        scores_data[target_id] = round(scores_data.get(target_id, 0) - val, 2)
-        if scores_data[target_id] < 0:
-            scores_data[target_id] = 0
-        save_json("scores.json", scores_data)
+        new_balance = add_points_for_uid(target_id, -val)
 
         waiting_for.pop(uid, None)
         try:
-            await bot.send_message(int(target_id), f"Адмін зняв у тебе {val}⭐. Новий баланс: {scores_data[target_id]}⭐")
+            await bot.send_message(
+                int(target_id),
+                f"Адмін зняв у тебе {val}⭐. Новий баланс: {new_balance}⭐"
+            )
         except Exception:
             pass
 
-        await message.answer(f"Знято {val}⭐ у користувача {target_id}. Баланс тепер: {scores_data[target_id]}⭐", reply_markup=admin_menu_keyboard())
+        await message.answer(
+            f"Знято {val}⭐ у користувача {target_id}. Баланс тепер: {new_balance}⭐",
+            reply_markup=admin_menu_keyboard()
+        )
         return
-    
+
     # ADMIN: після approve_score — вводить кількість балів
-    
     if isinstance(state, dict) and state.get("action") == "admin_confirm_score" and message.from_user.id == AUTHOR_ID:
         try:
             val = float(text.strip())
         except Exception:
             await message.answer("Введи число (може бути дробове).")
             return
+
         target_id = str(state["target_id"])
-        scores_data[target_id] = round(scores_data.get(target_id, 0) + val, 2)
-        save_json("scores.json", scores_data)
+        new_balance = add_points_for_uid(target_id, val)
+
         waiting_for.pop(uid, None)
         try:
-            await bot.send_message(int(target_id), f"Адмін нарахував тобі {val}⭐. Новий баланс: {scores_data[target_id]}⭐")
+            await bot.send_message(
+                int(target_id),
+                f"Адмін нарахував тобі {val}⭐. Новий баланс: {new_balance}⭐"
+            )
         except Exception:
             pass
-        # Після нарахування — якщо ще заявки залишились, покажемо наступну, інакше назад в адмін меню
+
         if pending_data.get("score_requests"):
             await send_next_pending_score_to_admin(message.from_user.id)
         else:
-            await message.answer(f"Нараховано {val}⭐ користувачу {state.get('target_display')}.", reply_markup=admin_menu_keyboard())
+            await message.answer(
+                f"Нараховано {val}⭐ користувачу {state.get('target_display')}.",
+                reply_markup=admin_menu_keyboard()
+            )
         return
 
     # ADMIN: reply contact — адмін ввів текст/приєднав фото/відео щоб відповісти користувачу
@@ -1175,18 +1327,20 @@ async def generic_handler(message: types.Message):
     await message.answer("Не розпізнаю це повідомлення.🤷‍♂️", reply_markup=main_menu(message.from_user.id == AUTHOR_ID))
 
 # ========== Автосейв ==========
+# ---------- AUTOSAVE (не зберігаємо users.json тут) ----------
 async def autosave_loop():
     while True:
-        save_json("schedule.json", schedule_data)
-        save_json("news.json", news_data)
-        save_json("socials.json", socials_data)
-        save_json("memes.json", memes_data)
-        save_json("pending.json", pending_data)
-        save_json("scores.json", scores_data)
-        save_json("menu.json", menu_data)
+        try:
+            save_json("schedule.json", schedule_data)
+            save_json("news.json", news_data)
+            save_json("socials.json", socials_data)
+            save_json("memes.json", memes_data)
+            save_json("pending.json", pending_data)
+            save_json("menu.json", menu_data)
+            save_json("shop.json", shop_data)
+        except Exception as e:
+            print("autosave error:", e)
         await asyncio.sleep(15)
-
-
 
 
 
