@@ -437,7 +437,7 @@ async def change_points(message: types.Message):
 # список допустимих класів — винесемо в змінну для зручності
 CLASSES = ["1","2","3","4","5-А","5-Б","6","7","8","9","10","11"]
 
-@dp.message(lambda m: m.text in CLASSES)
+@dp.message(lambda m: m.text in CLASSES and waiting_for.get(str(m.from_user.id)) is None)
 async def set_class(message: types.Message):
     uid = uid_str_from_message(message)
     
@@ -1224,7 +1224,7 @@ async def generic_handler(message: types.Message):
 
 
     # ========== СПОЧАТКУ ОБРОБКА ВИБОРУ КЛАСУ ==========
-    if text in CLASSES:
+    if text in CLASSES and waiting_for.get(uid) is None:
         await set_class(message)
         return
 
