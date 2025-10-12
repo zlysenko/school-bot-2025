@@ -36,6 +36,176 @@ async def dump_admin_kb(message: types.Message):
     await message.answer("Admin keyboard:\n" + "\n".join(rows))
 
 
+@dp.message(Command("reset"))
+async def reset_state(message: types.Message):
+    uid = uid_str_from_message(message)
+    waiting_for.pop(uid, None)
+    await message.answer("✅ Стан скинуто. Тепер можете обрати клас або використовувати меню.", 
+                         reply_markup=main_menu(message.from_user.id == AUTHOR_ID))
+    
+
+
+
+@dp.message(Command("message"))
+async def send_mass_message(message: types.Message):
+    if message.from_user.id != AUTHOR_ID:
+        await message.answer("❌ Ця команда доступна тільки адміністратору.")
+        return
+    
+    users = get_users_dict()
+    
+    if not users:
+        await message.answer("❌ Немає користувачів для розсилки.")
+        return
+    
+    total_users = len(users)
+    sent_count = 0
+    failed_count = 0
+    
+    # Статус повідомлення
+    status_msg = await message.answer(f"📤 Розпочато розсилку для {total_users} користувачів...\n\n0/{total_users} відправлено")
+    
+    # Обробка фото з підписом
+    if message.photo:
+        file_id = message.photo[-1].file_id
+        caption = message.caption or ""
+        
+        # Видаляємо команду /massage з початку підпису, якщо вона там є
+        if caption.startswith('/massage'):
+            caption = caption.replace('/massage', '', 1).strip()
+        
+        full_caption = f"📢 Повідомлення від адміністратора:\n\n{caption}" if caption else "📢 Повідомлення від адміністратора"
+        
+        for user_id in users.keys():
+            try:
+                await bot.send_photo(int(user_id), file_id, caption=full_caption)
+                sent_count += 1
+            except Exception as e:
+                failed_count += 1
+                print(f"Не вдалося відправити фото користувачу {user_id}: {e}")
+            
+            # Оновлення статусу кожні 10 повідомлень
+            if (sent_count + failed_count) % 10 == 0:
+                await status_msg.edit_text(
+                    f"📤 Розсилка фото...\n\n"
+                    f"Відправлено: {sent_count}/{total_users}\n"
+                    f"Помилок: {failed_count}\n"
+                    f"Успішних: {round((sent_count/total_users)*100, 1)}%"
+                )
+            
+            await asyncio.sleep(0.1)
+    
+    # Обробка відео з підписом
+    elif message.video:
+        file_id = message.video.file_id
+        caption = message.caption or ""
+        
+        # Видаляємо команду /massage з початку підпису
+        if caption.startswith('/massage'):
+            caption = caption.replace('/massage', '', 1).strip()
+        
+        full_caption = f"📢 Повідомлення від адміністратора:\n\n{caption}" if caption else "📢 Повідомлення від адміністратора"
+        
+        for user_id in users.keys():
+            try:
+                await bot.send_video(int(user_id), file_id, caption=full_caption)
+                sent_count += 1
+            except Exception as e:
+                failed_count += 1
+                print(f"Не вдалося відправити відео користувачу {user_id}: {e}")
+            
+            if (sent_count + failed_count) % 10 == 0:
+                await status_msg.edit_text(
+                    f"📤 Розсилка відео...\n\n"
+                    f"Відправлено: {sent_count}/{total_users}\n"
+                    f"Помилок: {failed_count}\n"
+                    f"Успішних: {round((sent_count/total_users)*100, 1)}%"
+                )
+            
+            await asyncio.sleep(0.1)
+    
+    # Обробка голосового повідомлення
+    elif message.voice:
+        file_id = message.voice.file_id
+        caption = message.caption or ""
+        
+        # Видаляємо команду /massage з початку підпису
+        if caption.startswith('/massage'):
+            caption = caption.replace('/massage', '', 1).strip()
+        
+        full_caption = f"📢 Повідомлення від адміністратора:\n\n{caption}" if caption else "📢 Повідомлення від адміністратора"
+        
+        for user_id in users.keys():
+            try:
+                await bot.send_voice(int(user_id), file_id, caption=full_caption)
+                sent_count += 1
+            except Exception as e:
+                failed_count += 1
+                print(f"Не вдалося відправити голосове користувачу {user_id}: {e}")
+            
+            if (sent_count + failed_count) % 10 == 0:
+                await status_msg.edit_text(
+                    f"📤 Розсилка голосового повідомлення...\n\n"
+                    f"Відправлено: {sent_count}/{total_users}\n"
+                    f"Помилок: {failed_count}\n"
+                    f"Успішних: {round((sent_count/total_users)*100, 1)}%"
+                )
+            
+            await asyncio.sleep(0.1)
+    
+    # Обробка текстового повідомлення
+    else:
+        # Перевіряємо, чи є текст після команди
+        if len(message.text.split()) < 2:
+            await message.answer(
+                "⚠️ Використання команди /massage:\n\n"
+                "• Текст: /massage ваш текст\n"
+                "• Фото: надішліть фото з підписом (можна використовувати команду /massage в підписі)\n"
+                "• Відео: надішліть відео з підписом (можна використовувати команду /massage в підписі)\n"
+                "• Голосове: надішліть голосове повідомлення з підписом (можна використовувати команду /massage в підписі)"
+            )
+            return
+        
+        text = message.text.split(' ', 1)[1]  # Беремо тільки текст після команди
+        full_text = f"📢 Повідомлення від адміністратора:\n\n{text}"
+        
+        for user_id in users.keys():
+            try:
+                await bot.send_message(int(user_id), full_text)
+                sent_count += 1
+            except Exception as e:
+                failed_count += 1
+                print(f"Не вдалося відправити текст користувачу {user_id}: {e}")
+            
+            if (sent_count + failed_count) % 10 == 0:
+                await status_msg.edit_text(
+                    f"📤 Розсилка тексту...\n\n"
+                    f"Відправлено: {sent_count}/{total_users}\n"
+                    f"Помилок: {failed_count}\n"
+                    f"Успішних: {round((sent_count/total_users)*100, 1)}%"
+                )
+            
+            await asyncio.sleep(0.1)
+    
+    # Фінальний звіт
+    success_rate = round((sent_count/total_users)*100, 1) if total_users > 0 else 0
+    
+    await status_msg.edit_text(
+        f"✅ Розсилка завершена!\n\n"
+        f"📊 Детальна статистика:\n"
+        f"• Всього користувачів: {total_users}\n"
+        f"• Успішно відправлено: {sent_count}\n"
+        f"• Не вдалося відправити: {failed_count}\n"
+        f"• Успішних: {success_rate}%\n\n"
+        f"{'🎉 Відмінний результат!' if success_rate > 90 else '✅ Добре!' if success_rate > 70 else '⚠️ Можна краще' if success_rate > 50 else '❌ Потрібно перевірити базу користувачів'}"
+    )
+
+
+
+
+
+
+
 # ================== JSON IO ==================
 def save_json(filename: str, data):
     try:
@@ -267,14 +437,28 @@ async def change_points(message: types.Message):
 # список допустимих класів — винесемо в змінну для зручності
 CLASSES = ["1","2","3","4","5-А","5-Б","6","7","8","9","10","11"]
 
-@dp.message(lambda m: m.text in CLASSES and not waiting_for.get(str(m.from_user.id)))
+@dp.message(lambda m: m.text in CLASSES)
 async def set_class(message: types.Message):
     uid = uid_str_from_message(message)
+    
+    # Якщо користувач у стані гри RPS - виходимо з нього
+    current_state = waiting_for.get(uid)
+    if isinstance(current_state, dict) and current_state.get("action") == "rps_choose":
+        waiting_for.pop(uid, None)
+    
     users = get_users_dict()
     users.setdefault(uid, {"name": message.from_user.full_name, "username": message.from_user.username or "", "points": 0})
     users[uid]["class"] = message.text
     save_users_dict(users)
-    await message.answer(f"✅ Твій клас збережено: {message.text}", reply_markup=main_menu(message.from_user.id == AUTHOR_ID))
+
+    # Скидаємо будь-які "очікування" при виборі класу
+    waiting_for.pop(uid, None)
+
+    await message.answer(
+        f"✅ Твій клас збережено: {message.text}",
+        reply_markup=main_menu(message.from_user.id == AUTHOR_ID)
+    )
+
 
 
 @dp.message(lambda m: m.text == "✏️ Змінити клас")
@@ -304,6 +488,69 @@ async def admin_delete_social_prompt(message: types.Message):
     text = "Список соцмереж:\n" + "\n".join(f"{i+1}. {name}: {link}" for i, (name, link) in enumerate(socials_data.items()))
     waiting_for[str(message.from_user.id)] = "admin_delete_social"
     await message.answer(text + "\n\nВведи назву або номер соцмережі для видалення:", reply_markup=ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="⬅️ Назад")]], resize_keyboard=True))
+
+
+
+
+
+
+
+
+
+
+
+
+@dp.message(lambda m: m.text == "📅 Змінити розклад" and m.from_user.id == AUTHOR_ID)
+async def admin_change_schedule_prompt(message: types.Message):
+    waiting_for[str(message.from_user.id)] = "admin_change_schedule"
+    await message.answer(
+        "Введи новий розклад у форматі:\n\nКлас | День тижня | Новий розклад",
+        reply_markup=ReplyKeyboardMarkup(
+            keyboard=[[KeyboardButton(text="⬅️ Назад")]],
+            resize_keyboard=True
+        )
+    )
+
+
+
+# Обробка введення
+@dp.message(lambda m: waiting_for.get(str(m.from_user.id)) == "admin_change_schedule" and m.from_user.id == AUTHOR_ID)
+async def admin_change_schedule(message: types.Message):
+    uid = str(message.from_user.id)
+    try:
+        klass, day, lessons = [x.strip() for x in message.text.split("|", 2)]
+        schedule_data.setdefault(klass, {})[day] = lessons
+        save_json("schedule.json", schedule_data)
+        waiting_for.pop(uid, None)
+        await message.answer(
+            f"✅ Розклад оновлено для {klass} ({day}):\n{lessons}",
+            reply_markup=admin_menu_keyboard()
+        )
+    except Exception:
+        await message.answer("❌ Неправильний формат. Використовуй: Клас | День тижня | Новий розклад")
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
@@ -583,32 +830,35 @@ async def clicker_press(message: types.Message):
     waiting_for.pop(uid, None)
     await message.answer(f"Отримано +{gain}⭐. Баланс: {new_bal}⭐", reply_markup=main_menu(message.from_user.id == AUTHOR_ID))
 
-# RPS
-@dp.message(lambda m: m.text and m.text.startswith("Камінь/Ножиці/Папір"))
+
+
+@dp.message(lambda m: m.text == "Камінь/Ножиці/Папір ✂️📄🪨")
 async def rps_prompt(message: types.Message):
     uid = uid_str_from_message(message)
-    waiting_for[uid] = "rps_waiting_bet"
-    await message.answer("Вкажи ставку в балах (число):", reply_markup=ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="⬅️ Назад")]], resize_keyboard=True))
-
-@dp.message(lambda m: waiting_for.get(uid_str_from_message(m)) == "rps_waiting_bet")
-async def rps_receive_bet(message: types.Message):
-    uid = uid_str_from_message(message)
-    try:
-        bet = float(message.text.strip())
-    except Exception:
-        await message.answer("Введи число (наприклад: 1).")
-        return
     bal = get_points_for_uid(uid)
-    if bet <= 0 or bet > bal:
-        await message.answer("Некоректна ставка або недостатньо балів.")
+    
+    # Перевірка, чи є бали для гри
+    if bal <= 0:
+        await message.answer("❌ У тебе немає балів для гри! Зароби спочатку бали через клікер або інші способи.", 
+                           reply_markup=earn_menu_keyboard())
         return
-    waiting_for[uid] = {"action":"rps_choose","bet":bet}
-    kb = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="Камінь"),KeyboardButton(text="Ножиці"),KeyboardButton(text="Папір")],[KeyboardButton(text="⬅️ Назад")]], resize_keyboard=True)
-    await message.answer("Оберіть: Камінь / Ножиці / Папір", reply_markup=kb)
+        
+    waiting_for[uid] = "rps_waiting_bet"
+    await message.answer(f"Твій баланс: {bal}⭐\nВкажи ставку в балах (число):", 
+                        reply_markup=ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="⬅️ Назад")]], resize_keyboard=True))
+
+# В обробнику для rps_choose, додайте перевірку на "⬅️ Назад" на початку:
 
 @dp.message(lambda m: isinstance(waiting_for.get(uid_str_from_message(m)), dict) and waiting_for.get(uid_str_from_message(m)).get("action") == "rps_choose")
 async def rps_choose(message: types.Message):
     uid = uid_str_from_message(message)
+    
+    # Додаємо обробку "⬅️ Назад"
+    if message.text == "⬅️ Назад":
+        waiting_for.pop(uid, None)
+        await message.answer("Повертаюсь у меню заробітку балів.", reply_markup=earn_menu_keyboard())
+        return
+        
     mapping = {"камінь":"rock","ножиці":"scissors","папір":"paper","rock":"rock","scissors":"scissors","paper":"paper"}
     choice = message.text.strip().lower()
     if choice not in mapping:
@@ -630,6 +880,7 @@ async def rps_choose(message: types.Message):
     waiting_for.pop(uid, None)
     bal = get_points_for_uid(uid)
     await message.answer(f"Твій вибір: {user_choice}\nБот: {bot_choice}\n{result_text}\nБаланс: {bal}⭐", reply_markup=main_menu(message.from_user.id == AUTHOR_ID))
+
 
 # Надіслати оцінку на перевірку (можна фото+текст)
 @dp.message(lambda m: m.text == "📤 Надіслати оцінку на перевірку")
@@ -969,17 +1220,90 @@ async def generic_handler(message: types.Message):
     text = message.text or ""
     state = waiting_for.get(uid)
 
-    # Кнопка "⬅️ Назад"
+
+
+
+    # ========== СПОЧАТКУ ОБРОБКА ВИБОРУ КЛАСУ ==========
+    if text in CLASSES:
+        await set_class(message)
+        return
+
+    # ========== ПОТІМ ОБРОБКА "НАЗАД" ==========
     if text == "⬅️ Назад":
         waiting_for.pop(uid, None)
         stack = menu_stack.get(uid, [])
         if stack:
-            prev_menu = stack.pop()  # беремо попереднє меню
+            prev_menu = stack.pop()
             await message.answer("Повертаюсь назад.", reply_markup=prev_menu)
         else:
             await message.answer("Повертаюсь у головне меню.", reply_markup=main_menu(message.from_user.id == AUTHOR_ID))
         menu_stack[uid] = stack
         return
+    
+
+    if state == "rps_waiting_bet":
+        if text == "⬅️ Назад":
+            waiting_for.pop(uid, None)
+            await message.answer("Повертаюсь у меню заробітку балів.", reply_markup=earn_menu_keyboard())
+            return
+        
+        try:
+            bet = float(message.text.strip())
+        except Exception:
+            await message.answer("Введи число (наприклад: 1) або натисни '⬅️ Назад' для виходу.")
+            return
+            
+        bal = get_points_for_uid(uid)
+        if bet <= 0:
+            await message.answer("Ставка повинна бути більше 0. Спробуй ще раз або натисни '⬅️ Назад'.")
+            return
+            
+        if bet > bal:
+            await message.answer(f"Недостатньо балів. У тебе {bal}⭐. Введи меншу суму або натисни '⬅️ Назад'.")
+            return
+            
+        waiting_for[uid] = {"action":"rps_choose","bet":bet}
+        kb = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="Камінь"),KeyboardButton(text="Ножиці"),KeyboardButton(text="Папір")],[KeyboardButton(text="⬅️ Назад")]], resize_keyboard=True)
+        await message.answer("Оберіть: Камінь / Ножиці / Папір", reply_markup=kb)
+        return
+
+
+    # Додайте цей блок в generic_handler, наприклад після обробки "admin_add_social"
+    if state == "admin_change_schedule" and message.from_user.id == AUTHOR_ID:
+        try:
+            parts = [x.strip() for x in message.text.split("|", 2)]
+            if len(parts) != 3:
+                await message.answer("❌ Неправильний формат. Використовуй: Клас | День тижня | Новий розклад")
+                return
+                
+            klass, day, lessons = parts
+            
+            # Перевірка коректності класу
+            if klass not in CLASSES:
+                await message.answer(f"❌ Невірний клас. Доступні класи: {', '.join(CLASSES)}")
+                return
+                
+            # Перевірка коректності дня
+            valid_days = ["Понеділок", "Вівторок", "Середа", "Четвер", "П'ятниця"]
+            if day not in valid_days:
+                await message.answer(f"❌ Невірний день. Доступні дні: {', '.join(valid_days)}")
+                return
+            
+            # Оновлення розкладу
+            if klass not in schedule_data:
+                schedule_data[klass] = {}
+            schedule_data[klass][day] = lessons
+            save_json("schedule.json", schedule_data)
+            
+            waiting_for.pop(uid, None)
+            await message.answer(
+                f"✅ Розклад оновлено для {klass} ({day}):\n{lessons}",
+                reply_markup=admin_menu_keyboard()
+            )
+        except Exception as e:
+            await message.answer(f"❌ Помилка: {str(e)}\nВикористовуй формат: Клас | День тижня | Новий розклад")
+        return
+
 
 
 
@@ -1018,6 +1342,8 @@ async def generic_handler(message: types.Message):
         waiting_for.pop(uid, None)
         await message.answer("Дякую! Твоя новина відправлена адміну на перевірку.", reply_markup=main_menu(message.from_user.id == AUTHOR_ID))
         return
+
+
 
 
     # ADMIN: додати новину одразу
@@ -1338,9 +1664,12 @@ async def autosave_loop():
             save_json("pending.json", pending_data)
             save_json("menu.json", menu_data)
             save_json("shop.json", shop_data)
+            # Додаємо збереження users.json
+            save_users_dict(get_users_dict())
+            print(f"✅ Автозбереження виконано о {datetime.datetime.now()}")
         except Exception as e:
-            print("autosave error:", e)
-        await asyncio.sleep(15)
+            print(f"❌ Помилка автозбереження: {e}")
+        await asyncio.sleep(120)
 
 
 
@@ -1358,19 +1687,29 @@ async def start_web_server():
 
 
 # ========== Запуск ==========
-# async def main():
-#     print("Бот запускається...")
-#     asyncio.create_task(autosave_loop())
-#     await dp.start_polling(bot)
-
 async def main():
     print("Бот запускається...")
+    
+    # Скидання станів очікування при старті
+    waiting_for.clear()
+    last_click.clear()
+    menu_stack.clear()
+    
+    # Завантаження актуальних даних
+    global schedule_data, news_data, socials_data, memes_data, pending_data, menu_data, shop_data
+    schedule_data = load_json("schedule.json", {})
+    news_data = load_json("news.json", [])
+    socials_data = load_json("socials.json", {})
+    memes_data = load_json("memes.json", [])
+    pending_data = load_json("pending.json", {"news": [], "memes": [], "score_requests": [], "contact": []})
+    menu_data = load_json("menu.json", {})
+    shop_data = load_json("shop.json", {"file_id": None, "caption": ""})
+    
+    print("✅ Дані завантажено")
+    
     asyncio.create_task(autosave_loop())
-    asyncio.create_task(start_web_server())  # 👈 додали
+    asyncio.create_task(start_web_server())
     await dp.start_polling(bot)
-
-
-
 
 if __name__ == "__main__":
     asyncio.run(main())
