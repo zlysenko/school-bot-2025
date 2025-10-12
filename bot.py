@@ -1221,12 +1221,12 @@ async def generic_handler(message: types.Message):
     state = waiting_for.get(uid)
 
 
-
-
     # ========== СПОЧАТКУ ОБРОБКА ВИБОРУ КЛАСУ ==========
     if text in CLASSES and waiting_for.get(uid) is None:
         await set_class(message)
         return
+
+
 
     # ========== ПОТІМ ОБРОБКА "НАЗАД" ==========
     if text == "⬅️ Назад":
