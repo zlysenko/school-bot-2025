@@ -1,0 +1,14 @@
+FROM python:3.11-slim
+
+WORKDIR /app
+
+COPY requirements.txt /app/
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY . /app
+
+RUN mkdir -p /data
+ENV DATA_DIR=/data
+ENV PYTHONUNBUFFERED=1
+
+CMD ["python", "bot3.py"]
