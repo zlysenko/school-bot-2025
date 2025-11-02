@@ -1,20 +1,14 @@
 FROM python:3.11-slim
 
-# Створюємо робочу папку
 WORKDIR /app
 
-# Копіюємо файл із залежностями
 COPY requirements.txt /app/
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Копіюємо увесь код
 COPY . /app
 
-# Створюємо папку для зберігання JSONів
 RUN mkdir -p /data
-
-# Змінна середовища (вказує куди зберігати JSONи)
 ENV DATA_DIR=/data
+ENV PYTHONUNBUFFERED=1
 
-# Запускаємо бота
 CMD ["python", "bot3.py"]
