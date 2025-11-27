@@ -1,6 +1,6 @@
+
 # bot3.py — повний робочий код
 import asyncio
-import tempfile
 import json
 import datetime
 import random
@@ -207,58 +207,34 @@ async def send_mass_message(message: types.Message):
 
 
 # ================== JSON IO ==================
-
-
-DATA_DIR = os.getenv("DATA_DIR", "/data")
-os.makedirs(DATA_DIR, exist_ok=True)
-
-def _data_path(name: str) -> str:
-    if name.endswith(".json"):
-        fname = name
-    else:
-        fname = f"{name}.json"
-    return os.path.join(DATA_DIR, fname)
-
 def save_json(filename: str, data):
-    import os, tempfile, json
-    path = _data_path(filename)
-    dirn = os.path.dirname(path)
-    os.makedirs(dirn, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(prefix=".tmp-", dir=dirn, suffix=".json")
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
+        with open(filename, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
             f.flush()
             try:
                 os.fsync(f.fileno())
             except Exception:
                 pass
-        os.replace(tmp, path)
-    finally:
-        try:
-            if os.path.exists(tmp):
-                os.remove(tmp)
-        except Exception:
-            pass
+    except Exception as e:
+        print(f"[ERROR] Failed to write {filename}: {e}")
+        raise
 
 def load_json(filename: str, default=None):
     if default is None:
         default = {}
-    path = _data_path(filename)
     try:
-        with open(path, "r", encoding="utf-8") as f:
+        with open(filename, "r", encoding="utf-8") as f:
             return json.load(f)
     except FileNotFoundError:
-        save_json(filename, default)
+        try:
+            save_json(filename, default)
+        except Exception as e:
+            print(f"[WARN] Could not create {filename}: {e}")
         return default
     except Exception as e:
-        print(f"[WARN] Could not load {path}: {e}")
+        print(f"[WARN] Could not load {filename}: {e}")
         return default
-
-
-
-
-
 
 # ================== HELPERS for users & points ==================
 USERS_FILE = "users.json"
@@ -390,12 +366,22 @@ def earn_menu_keyboard() -> ReplyKeyboardMarkup:
 async def cmd_start(message: types.Message):
     uid = uid_str_from_message(message)
     users = get_users_dict()
-    users.setdefault(uid, {
-        "name": message.from_user.full_name,
-        "username": message.from_user.username or "",
-        "points": 0
-    })
-    save_users_dict(users)
+
+    # якщо користувача ще немає — створюємо порожній запис
+    if uid not in users:
+        users[uid] = {
+            "name": message.from_user.full_name or "",
+            "username": message.from_user.username or "",
+            "points": 0
+        }
+        save_users_dict(users)
+
+    # якщо нема імені — просимо ввести
+    if not users[uid]["name"]:
+        waiting_for[uid] = "ask_name"
+        await message.answer("👋 Привіт! Введи, будь ласка, своє ім’я:")
+        return
+
     await message.answer("Привіт! Обери свій клас:", reply_markup=class_selection_keyboard())
 
 @dp.message(Command("whoami"))
@@ -411,9 +397,12 @@ async def users_list(message: types.Message):
         await message.answer("Немає користувачів у базі.")
         return
     text = "📋 Список користувачів:\n\n"
+
     for uid, info in users.items():
-        uname = f"@{info.get('username')}" if info.get('username') else f"ID:{uid}"
-        text += f"{uname}\n👤 {info.get('name','Без імені')}\n🏆 Бали: {info.get('points',0)}\n\n"
+    uname = f"`@{info.get('username')}`" if info.get('username') else f"`{uid}`"
+    name = info.get("name", "Без імені")
+    points = info.get("points", 0)
+    text += f"{uname}\n👤 {name}\n🏆 Бали: {points}\n\n"
     await message.answer(text)
 
 # команда для зміни балів
@@ -1329,6 +1318,20 @@ async def generic_handler(message: types.Message):
         return
 
 
+
+    if state == "ask_name":
+        name = message.text.strip()
+        if len(name) < 2:
+            await message.answer("⚠️ Ім’я має бути довше. Спробуй ще раз:")
+            return
+        users = get_users_dict()
+        users[uid] = users.get(uid, {"points": 0})
+        users[uid]["name"] = name
+        users[uid]["username"] = message.from_user.username or ""
+        save_users_dict(users)
+        waiting_for.pop(uid, None)
+        await message.answer(f"✅ Ім’я збережено: {name}\nТепер обери свій клас:", reply_markup=class_selection_keyboard())
+        return
 
 
         # ADMIN: видалити соцмережу
